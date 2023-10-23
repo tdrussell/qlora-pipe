@@ -1,0 +1,21 @@
+accelerate
+bitsandbytes
+datasets
+deepspeed
+packaging
+peft
+safetensors
+sentencepiece
+scipy
+tensorboard
+toml
+transformers
+
+# minimum Axolotl dependencies for what we use
+addict
+optimum
+fschat
+pynvml
+evaluate
+wandb
+numba
