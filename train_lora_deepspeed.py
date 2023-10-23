@@ -4,10 +4,6 @@ from datetime import datetime, timezone
 import shutil
 import glob
 import time
-import sys
-import yaml
-
-sys.path.insert(0, os.path.abspath('axolotl/src'))
 
 import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -16,15 +12,12 @@ from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 import deepspeed
 import accelerate
 import toml
-import safetensors
 import bitsandbytes
 
 from dataset_utils import load_dataset
 from llama_pipe import LlamaForCausalLMPipe
 import dataloader
 from utils import *
-from axolotl.utils.dict import DictDefault
-from axolotl.utils.data import prepare_dataset
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--config', help='Path to TOML configuration file.')
@@ -75,13 +68,6 @@ def evaluate(model_engine, eval_dataloader, tb_writer, step):
     if is_main_process():
         tb_writer.add_scalar('eval/loss', eval_loss, step)
         tb_writer.add_scalar('eval/eval_time_sec', duration, step)
-
-def cosine_with_warmup_lr_scheduler(warmup_steps, total_steps):
-    def get_lr_scheduler(optimizer):
-        warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1/warmup_steps, total_iters=warmup_steps)
-        cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, total_steps)
-        return torch.optim.lr_scheduler.SequentialLR(optimizer, schedulers=[warmup_scheduler, cosine_scheduler], milestones=[warmup_steps])
-    return get_lr_scheduler
 
 # TODO: this is pretty hacky. Is there a way to get the state_dict from the lora model directly,
 # but still know which layers the given pipeline parallel stage actually trained?
