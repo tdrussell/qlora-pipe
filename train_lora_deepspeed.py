@@ -246,7 +246,7 @@ if __name__ == '__main__':
     train_dataloader = dataloader.PipelineDataLoader(
         train_data,
         tokenizer,
-        model_engine.train_batch_size(),
+        model_engine.train_micro_batch_size_per_gpu(),
         model_engine.gradient_accumulation_steps(),
         model_engine.grid.get_data_parallel_world_size(),
         model_engine.grid.get_data_parallel_rank(),
@@ -288,7 +288,7 @@ if __name__ == '__main__':
     eval_dataloader = dataloader.PipelineDataLoader(
         eval_data,
         tokenizer,
-        model_engine.train_batch_size(),
+        model_engine.train_micro_batch_size_per_gpu(),
         1,
         model_engine.grid.get_data_parallel_world_size(),
         model_engine.grid.get_data_parallel_rank(),
