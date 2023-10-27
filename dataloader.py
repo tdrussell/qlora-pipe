@@ -94,6 +94,7 @@ class DistributedBatchSamper(torch.utils.data.Sampler):
 class PipelineDataLoader:
     # A100 wants padding to multiple of 64, other cards are efficient with smaller, so just do 64
     def __init__(self, dataset, tokenizer, batch_size, gradient_accumulation_steps, data_parallel_world_size, data_parallel_rank, shuffle=True, group_by_length=False, pad_to_multiple_of=64):
+        assert data_parallel_rank < data_parallel_world_size
         self.dataset = dataset
         self.tokenizer = tokenizer
         self.batch_size = batch_size
@@ -128,9 +129,13 @@ class PipelineDataLoader:
             self._create_dataloader()
             macro_batch = next(self.data)
             self.epoch += 1
-            self.num_batches_pulled = 0
-        self.num_batches_pulled += 1
         return macro_batch
+
+    def _pull_batches_from_dataloader(self):
+        for macro_batch in self.dataloader:
+            self.num_batches_pulled += 1
+            for batch in split_batch(macro_batch, self.gradient_accumulation_steps):
+                yield batch
 
     def _create_dataloader(self):
         data_collator = DataCollatorForSeq2Seq(self.tokenizer, pad_to_multiple_of=self.pad_to_multiple_of)
@@ -147,7 +152,8 @@ class PipelineDataLoader:
             collate_fn=collate_fn,
             #num_workers=self.num_local_io_workers,
         )
-        self.data = (batch for macro_batch in self.dataloader for batch in split_batch(macro_batch, self.gradient_accumulation_steps))
+        self.data = self._pull_batches_from_dataloader()
+        self.num_batches_pulled = 0
     
     def state_dict(self):
         return {
@@ -159,7 +165,7 @@ class PipelineDataLoader:
         self.epoch = state_dict['epoch']
         self.num_batches_pulled = state_dict['num_batches_pulled']
         self.dataloader = accelerate.skip_first_batches(self.dataloader, self.num_batches_pulled)
-        self.data = (batch for macro_batch in self.dataloader for batch in split_batch(macro_batch, self.gradient_accumulation_steps))
+        self.data = self._pull_batches_from_dataloader()
     
 
 # for testing
@@ -170,14 +176,55 @@ if __name__ == '__main__':
 
     from datasets import Dataset
     data = []
-    for i in range(1, 21):
+    for i in range(1, 41):
         input_ids = torch.tensor([i]*i)
         data.append({'input_ids': input_ids, 'attention_mask': torch.ones_like(input_ids), 'labels': input_ids})
     dataset = Dataset.from_list(data)
 
-    dataloader = PipelineDataLoader(dataset, tokenizer, batch_size=2, gradient_accumulation_steps=2, data_parallel_world_size=1, data_parallel_rank=0, group_by_length=True, pad_to_multiple_of=None)
-    for batch in dataloader:
-        if dataloader.epoch > 1:
-            break
-        print(batch)
-        print()
+    # dataloader = PipelineDataLoader(dataset, tokenizer, batch_size=2, gradient_accumulation_steps=2, data_parallel_world_size=1, data_parallel_rank=0, group_by_length=True, pad_to_multiple_of=None)
+    # for batch in dataloader:
+    #     if dataloader.epoch > 1:
+    #         break
+    #     print(batch)
+    #     print()
+
+    batch_size = 2
+    gradient_accumulation_steps = 2
+    data_parallel_world_size = 2
+    data_parallel_rank = 0
+    dataloader = PipelineDataLoader(
+        dataset,
+        tokenizer,
+        batch_size=batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        data_parallel_world_size=data_parallel_world_size,
+        data_parallel_rank=data_parallel_rank,
+        shuffle=False,
+        group_by_length=False,
+        pad_to_multiple_of=None
+    )
+    print(next(dataloader)[0][0])
+    print(next(dataloader)[0][0])
+    print(next(dataloader)[0][0])
+    print(next(dataloader)[0][0])
+
+    state_dict = dataloader.state_dict()
+    dataloader = PipelineDataLoader(
+        dataset,
+        tokenizer,
+        batch_size=batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        data_parallel_world_size=data_parallel_world_size,
+        data_parallel_rank=data_parallel_rank,
+        shuffle=False,
+        group_by_length=False,
+        pad_to_multiple_of=None
+    )
+    dataloader.load_state_dict(state_dict)
+    print()
+    print('-'*80)
+    print()
+    print(next(dataloader)[0][0])
+    print(next(dataloader)[0][0])
+    print(next(dataloader)[0][0])
+    print(next(dataloader)[0][0])
