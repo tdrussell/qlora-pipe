@@ -35,6 +35,8 @@ def initialize(args=None,
 
 
 class CustomPipelineEngine(PipelineEngine):
+
+
     def train_batch(self):
         if not torch._C.is_grad_enabled():
             raise RuntimeError(f'train_batch() requires gradients enabled. Use eval_batch() instead.')
@@ -52,7 +54,8 @@ class CustomPipelineEngine(PipelineEngine):
                                        stages=self.num_stages,
                                        stage_id=self.stage_id)
         self._exec_schedule(sched)
-        self.agg_train_loss = self._aggregate_total_loss()
+        # Actual training loss is always the first item.
+        self.agg_train_loss = self._aggregate_total_losses()[0]
 
         self.timers(TRAIN_BATCH_TIMER).stop()
 
@@ -84,3 +87,36 @@ class CustomPipelineEngine(PipelineEngine):
 
         # TODO: should return precisely what loss returned and allow others to be queried?
         return self.agg_train_loss
+
+
+    def _aggregate_total_losses(self):
+        # Scale loss, average among DP ranks, and bcast loss to the rest of my DP group
+        if isinstance(self.total_loss, torch.Tensor):
+            all_losses = [self.total_loss]
+        else:
+            all_losses = self.total_loss
+
+        all_agg_losses = []
+        for loss in all_losses:
+            if self.is_last_stage():
+                loss = self._scale_loss_by_gas(loss)
+
+                # Average loss across all data-parallel groups
+                agg_loss = loss.clone().detach()
+                if self.is_data_parallel:
+                    dist.all_reduce(agg_loss, group=self.mpu.get_data_parallel_group())
+                    agg_loss /= self.dp_world_size
+
+                assert self.global_rank in self.grid.pp_group
+                if self.is_pipe_parallel:
+                    dist.broadcast(tensor=agg_loss, src=self.global_rank, group=self.mpu.get_pipe_parallel_group())
+                all_agg_losses.append(agg_loss)
+            else:
+                # Get loss from last stage
+                src_rank = self.grid.stage_to_global(self.num_stages - 1)
+                assert src_rank in self.grid.pp_group
+                agg_loss = torch.Tensor([0.]).to(self.device)
+                dist.broadcast(tensor=agg_loss, src=src_rank, group=self.grid.get_pipe_parallel_group())
+                all_agg_losses.append(agg_loss)
+
+        return all_agg_losses
