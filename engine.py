@@ -3,7 +3,8 @@ import deepspeed
 from deepspeed.accelerator import get_accelerator
 from deepspeed import comm as dist
 from deepspeed.runtime.config import DeepSpeedConfig
-from deepspeed.runtime.pipe.engine import PipelineEngine
+from deepspeed.runtime.pipe.engine import PipelineEngine, TRAIN_BATCH_TIMER, PIPE_SEND_OUTPUT_TIMER, PIPE_SEND_GRAD_TIMER, PIPE_RECV_INPUT_TIMER, PIPE_RECV_GRAD_TIMER
+from deepspeed.runtime.pipe import schedule
 
 
 def initialize(args=None,
@@ -20,12 +21,66 @@ def initialize(args=None,
 
     mpu = model.mpu()
     config_class = DeepSpeedConfig(config, mpu)
-    engine = PipelineEngine(args=args,
-                            model=model,
-                            optimizer=optimizer,
-                            model_parameters=model_parameters,
-                            mpu=mpu,
-                            config=config,
-                            config_class=config_class)
+    engine = CustomPipelineEngine(
+        args=args,
+        model=model,
+        optimizer=optimizer,
+        model_parameters=model_parameters,
+        mpu=mpu,
+        config=config,
+        config_class=config_class
+    )
     
     return engine, engine.optimizer
+
+
+class CustomPipelineEngine(PipelineEngine):
+    def train_batch(self):
+        if not torch._C.is_grad_enabled():
+            raise RuntimeError(f'train_batch() requires gradients enabled. Use eval_batch() instead.')
+
+        # sequence length may change between macro batches (but not between gradient accumulation steps)
+        self.reset_activation_shape()
+
+        self.module.train()
+        self.total_loss = None
+        self._compute_loss = True
+
+        # Do the work
+        self.timers(TRAIN_BATCH_TIMER).start()
+        sched = schedule.TrainSchedule(micro_batches=self.micro_batches,
+                                       stages=self.num_stages,
+                                       stage_id=self.stage_id)
+        self._exec_schedule(sched)
+        self.agg_train_loss = self._aggregate_total_loss()
+
+        self.timers(TRAIN_BATCH_TIMER).stop()
+
+        if self.global_steps % self.steps_per_print() == 0:
+            if self.global_rank == 0:
+                elapsed = self.timers(TRAIN_BATCH_TIMER).elapsed(reset=True) / 1000.0
+                iter_time = elapsed / self.steps_per_print()
+                tput = self.train_batch_size() / iter_time
+                print(f'steps: {self.global_steps} '
+                      f'loss: {self.agg_train_loss:0.4f} '
+                      f'iter time (s): {iter_time:0.3f} '
+                      f'samples/sec: {tput:0.3f}')
+            else:
+                self.timers(TRAIN_BATCH_TIMER).elapsed(reset=True)
+
+        # Monitoring
+        if self.global_rank == 0 and self.monitor.enabled:
+            self.summary_events = [(f'Train/Samples/train_loss', self.agg_train_loss.mean().item(),
+                                    self.global_samples)]
+            self.monitor.write_events(self.summary_events)
+
+        if self.wall_clock_breakdown() and self.global_steps % self.steps_per_print() == 0:
+            self.timers.log([
+                PIPE_SEND_OUTPUT_TIMER,
+                PIPE_SEND_GRAD_TIMER,
+                PIPE_RECV_INPUT_TIMER,
+                PIPE_RECV_GRAD_TIMER,
+            ])
+
+        # TODO: should return precisely what loss returned and allow others to be queried?
+        return self.agg_train_loss

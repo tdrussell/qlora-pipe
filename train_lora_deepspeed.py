@@ -304,7 +304,6 @@ if __name__ == '__main__':
         evaluate(model_engine, eval_dataloader, tb_writer, 0)
     while True:
         loss = model_engine.train_batch()
-        model_engine.reset_activation_shape()  # sequence length may change between macro batches
 
         if train_dataloader.epoch != epoch:
             epoch = train_dataloader.epoch
