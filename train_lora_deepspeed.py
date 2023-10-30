@@ -18,6 +18,7 @@ from dataset_utils import load_dataset
 from llama_pipe import LlamaForCausalLMPipe
 import dataloader
 from utils import *
+import engine
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--config', help='Path to TOML configuration file.')
@@ -237,7 +238,7 @@ if __name__ == '__main__':
 
     parameters_to_train = [p for p in lora_model.parameters() if p.requires_grad]
     
-    model_engine, optimizer, _, _ = deepspeed.initialize(
+    model_engine, optimizer = engine.initialize(
         args=args,
         model=pipeline_model,
         model_parameters=parameters_to_train,
