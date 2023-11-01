@@ -89,6 +89,39 @@ class CustomPipelineEngine(PipelineEngine):
         return self.agg_train_loss
 
 
+    def eval_batch(self, data_iter):
+        self.module.eval()
+        self.total_loss = None
+        self._compute_loss = True
+
+        # Use the provided data iterator
+        train_iterator = self.data_iterator
+        self.set_dataiterator(data_iter)
+
+        # Do the work
+        sched = schedule.InferenceSchedule(micro_batches=self.micro_batches,
+                                           stages=self.num_stages,
+                                           stage_id=self.stage_id)
+
+        # prevent dead-lock with multiple evals sequence
+        dist.barrier()
+
+        with torch.no_grad():
+            self._exec_schedule(sched)
+
+        # list of losses
+        agg_eval_loss = self._aggregate_total_losses()
+
+        if self.global_rank == 0 and self.monitor.enabled:
+            self.summary_events = [(f'Train/Samples/eval_loss', agg_eval_loss[0].mean().item(), self.global_samples)]
+            self.monitor.write_events(self.summary_events)
+
+        # Restore the training iterator
+        self.set_dataiterator(train_iterator)
+
+        return agg_eval_loss[0]
+
+
     def _aggregate_total_losses(self):
         # Scale loss, average among DP ranks, and bcast loss to the rest of my DP group
         if isinstance(self.total_loss, torch.Tensor):
