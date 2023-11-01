@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 import transformers
+import torchmetrics
 
 
 class EmbeddingPipe(nn.Module):
@@ -82,13 +83,21 @@ class LlamaForCausalLMPipe(transformers.LlamaForCausalLM):
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()
         # Flatten the tokens
-        loss_fct = transformers.models.llama.modeling_llama.CrossEntropyLoss()
         shift_logits = shift_logits.view(-1, self.config.vocab_size)
         shift_labels = shift_labels.view(-1)
         # Enable model parallelism
         shift_labels = shift_labels.to(shift_logits.device)
+
+        loss_fct = transformers.models.llama.modeling_llama.CrossEntropyLoss()
         loss = loss_fct(shift_logits, shift_labels)
-        return loss
+        top1_accuracy_fct = torchmetrics.classification.MulticlassAccuracy(
+            num_classes=self.config.vocab_size,
+            ignore_index=-100,
+            average='micro',
+            top_k=1
+        ).to(shift_logits.device)
+        top1_accuracy = top1_accuracy_fct(shift_logits, shift_labels)
+        return loss, top1_accuracy
 
     def to_layers(self):
         def initial_layer(inputs):

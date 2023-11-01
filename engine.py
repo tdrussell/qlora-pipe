@@ -56,8 +56,9 @@ class CustomPipelineEngine(PipelineEngine):
                                        stages=self.num_stages,
                                        stage_id=self.stage_id)
         self._exec_schedule(sched)
+        agg_losses = self._aggregate_total_losses()
         # Actual training loss is always the first item.
-        self.agg_train_loss = self._aggregate_total_losses()[0]
+        self.agg_train_loss = agg_losses[0]
 
         self.timers(TRAIN_BATCH_TIMER).stop()
 
@@ -87,8 +88,7 @@ class CustomPipelineEngine(PipelineEngine):
                 PIPE_RECV_GRAD_TIMER,
             ])
 
-        # TODO: should return precisely what loss returned and allow others to be queried?
-        return self.agg_train_loss
+        return agg_losses
 
 
     def eval_batch(self, data_iter):
@@ -112,16 +112,16 @@ class CustomPipelineEngine(PipelineEngine):
             self._exec_schedule(sched)
 
         # list of losses
-        agg_eval_loss = self._aggregate_total_losses()
+        agg_eval_losses = self._aggregate_total_losses()
 
         if self.global_rank == 0 and self.monitor.enabled:
-            self.summary_events = [(f'Train/Samples/eval_loss', agg_eval_loss[0].mean().item(), self.global_samples)]
+            self.summary_events = [(f'Train/Samples/eval_loss', agg_eval_losses[0].mean().item(), self.global_samples)]
             self.monitor.write_events(self.summary_events)
 
         # Restore the training iterator
         self.set_dataiterator(train_iterator)
 
-        return agg_eval_loss[0]
+        return agg_eval_losses
 
 
     def _aggregate_total_losses(self):

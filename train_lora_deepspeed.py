@@ -54,20 +54,24 @@ def evaluate(model_engine, eval_dataloader, tb_writer, step):
     if is_main_process():
         print('Running eval')
     iterator = iter(eval_dataloader)
-    total_loss = 0.
+    total_losses = None
     count = 0.
     start = time.time()
     while True:
-        loss = model_engine.eval_batch(iterator)
+        losses = model_engine.eval_batch(iterator)
+        if total_losses is None:
+            total_losses = [0.] * len(losses)
         if eval_dataloader.epoch == 2:
             break
-        total_loss += loss.mean().item()
+        for i, loss in enumerate(losses):
+            total_losses[i] += loss.mean().item()
         count += 1
     duration = time.time() - start
     eval_dataloader.reset()
-    eval_loss = total_loss / count
+    eval_losses = [total_loss / count for total_loss in total_losses]
     if is_main_process():
-        tb_writer.add_scalar('eval/loss', eval_loss, step)
+        tb_writer.add_scalar('eval/loss', eval_losses[0], step)
+        tb_writer.add_scalar('eval/top1_accuracy', eval_losses[1], step)
         tb_writer.add_scalar('eval/eval_time_sec', duration, step)
 
 # TODO: this is pretty hacky. Is there a way to get the state_dict from the lora model directly,
@@ -303,7 +307,7 @@ if __name__ == '__main__':
     if config['eval_before_first_step'] and not config['resume_from_checkpoint']:
         evaluate(model_engine, eval_dataloader, tb_writer, 0)
     while True:
-        loss = model_engine.train_batch()
+        loss, top1_accuracy = model_engine.train_batch()
 
         if train_dataloader.epoch != epoch:
             epoch = train_dataloader.epoch
@@ -315,6 +319,7 @@ if __name__ == '__main__':
 
         if is_main_process() and step % config['logging_steps'] == 0:
             tb_writer.add_scalar('train/loss', loss.mean().item(), step)
+            tb_writer.add_scalar('train/top1_accuracy', top1_accuracy.mean().item(), step)
             tb_writer.add_scalar('train/lr', optimizer.param_groups[0]['lr'], step)
             # TODO: gather the weight norms across all stages in the pipelined model, not just the first.
             weight_norms = get_weight_norms(pipeline_model)
