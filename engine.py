@@ -5,6 +5,8 @@ from deepspeed import comm as dist
 from deepspeed.runtime.config import DeepSpeedConfig
 from deepspeed.runtime.pipe.engine import PipelineEngine, TRAIN_BATCH_TIMER, PIPE_SEND_OUTPUT_TIMER, PIPE_SEND_GRAD_TIMER, PIPE_RECV_INPUT_TIMER, PIPE_RECV_GRAD_TIMER
 from deepspeed.runtime.pipe import schedule
+from deepspeed.runtime.utils import PartitionedTensor
+from deepspeed.runtime.activation_checkpointing import checkpointing as ds_checkpointing
 
 
 def initialize(args=None,
@@ -153,3 +155,87 @@ class CustomPipelineEngine(PipelineEngine):
                 all_agg_losses.append(agg_loss)
 
         return all_agg_losses
+
+
+    # We override this to handle the model returning a list of "losses", but only doing backprop on the first.
+    def _exec_forward_pass(self, buffer_id):
+        self.tput_timer.start()
+        self.mem_status('BEFORE FWD', reset_max=True)
+
+        if isinstance(self.pipe_buffers['inputs'][buffer_id], tuple):
+            inputs = tuple(t.clone() for t in self.pipe_buffers['inputs'][buffer_id])
+        else:
+            inputs = self.pipe_buffers['inputs'][buffer_id].clone()
+
+        # collect the partitioned input from the previous stage
+        if self.is_pipe_partitioned and not self.is_first_stage():
+            part_input = PartitionedTensor.from_meta(meta=inputs[0],
+                                                     local_part=inputs[1],
+                                                     group=self.grid.get_slice_parallel_group())
+
+            inputs = (part_input.full(), *inputs[2:])
+            inputs[0].requires_grad = True
+            # skip mask
+            #inputs[1].requires_grad = True
+            part_input = None
+            inputs = inputs[0] if len(inputs) == 1 else inputs
+            self.pipe_buffers['inputs'][buffer_id] = inputs
+
+        # inputs has no gradient because it is from a cloned tensor
+        outputs = super(PipelineEngine, self).forward(inputs)
+
+        # Reset activation checkpointing buffers.
+        # Need to call this between evaluation iterations
+        if not self.module.training:
+            ds_checkpointing.reset()
+
+        # Partition the outputs if we are not the last stage
+        if self.is_pipe_partitioned and not self.is_last_stage():
+            if isinstance(outputs, tuple):
+                first_output = outputs[0]
+                # TODO: Improve pipe partitioning to pass multiple tensors that require grads
+                assert all([torch.is_tensor(elt) and elt.requires_grad is False for elt in outputs[1:]])
+                outputs_tail = outputs[1:]
+            elif torch.is_tensor(outputs):
+                first_output = outputs
+                outputs_tail = []
+            else:
+                raise ValueError("expecting a tensor or a tuple of tensors")
+            part = PartitionedTensor(tensor=first_output, group=self.grid.get_slice_parallel_group())
+            # Clear the large output data, but save the computation graph
+            first_output.data = torch.zeros(1)
+            self.pipe_buffers['output_tensors'][buffer_id] = first_output
+            # Inject the partitioned tensor into the output before sending
+            outputs = (part.to_meta(), part.data(), *outputs_tail)
+            part = None
+
+        self.pipe_buffers['outputs'][buffer_id] = outputs
+
+        # Optionally compute loss on the last device
+        if self.is_last_stage():
+            if self._compute_loss and self.module.loss_fn is not None:
+                labels = self.pipe_buffers['labels'][buffer_id]
+                losses = self.module.loss_fn(outputs, labels)
+            else:
+                # Some models just return loss from forward()
+                losses = outputs
+            if self.eval_return_logits:
+                self.outputs = outputs
+            if isinstance(losses, torch.Tensor):
+                self.loss = losses
+                self.fwd_outputs.append(self.loss.detach())
+
+                if self.total_loss is None:
+                    self.total_loss = torch.zeros_like(self.loss)
+                self.total_loss += self.loss.detach()
+            else:
+                self.loss = losses[0]
+                self.fwd_outputs.append([l.detach() for l in losses])
+
+                if self.total_loss is None:
+                    self.total_loss = [torch.zeros_like(l) for l in losses]
+                for idx, l in enumerate(losses):
+                    self.total_loss[idx] += l.detach()
+
+    # make our forward pass method apply
+    PipelineEngine._INSTRUCTION_MAP[schedule.ForwardPass] = _exec_forward_pass
