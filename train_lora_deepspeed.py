@@ -289,6 +289,11 @@ if __name__ == '__main__':
         train_dataloader.load_state_dict(client_state['custom_loader'])
         step = client_state['step'] + 1
 
+    if 'force_constant_lr' in config:
+        model_engine.lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1.0)
+        for pg in optimizer.param_groups:
+            pg['lr'] = config['force_constant_lr']
+
     # Eval dataset doesn't need to repeat; we just use this to track "epoch" so we know when we're done iterating over it.
     eval_dataloader = dataloader.PipelineDataLoader(
         eval_data,
