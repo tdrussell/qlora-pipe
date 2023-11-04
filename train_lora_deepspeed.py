@@ -28,11 +28,13 @@ parser.add_argument('--local_rank', type=int, default=-1,
 parser = deepspeed.add_config_arguments(parser)
 args = parser.parse_args()
 
+
 def get_weight_norms(model):
     norms = []
     for w in (p.detach() for p in model.parameters() if p.requires_grad):
         norms.append(torch.linalg.matrix_norm(w, keepdim=True))
     return torch.cat(norms)
+
 
 def print_model_info(model):
     if not is_main_process():
@@ -47,8 +49,18 @@ def print_model_info(model):
             print(p.requires_grad)
             print()
 
+
 def get_most_recent_run_dir(output_dir):
     return list(sorted(glob.glob(os.path.join(output_dir, '*'))))[-1]
+
+
+def write_metrics(tb_writer, prefix, metrics, step):
+    tb_writer.add_scalar(f'{prefix}/loss', metrics[0], step)
+    tb_writer.add_scalar(f'{prefix}/entropy', metrics[1], step)
+    tb_writer.add_scalar(f'{prefix}/top1_accuracy', metrics[2], step)
+    tb_writer.add_scalar(f'{prefix}/top5_accuracy', metrics[3], step)
+    tb_writer.add_scalar(f'{prefix}/top20_accuracy', metrics[4], step)
+
 
 def evaluate(model_engine, eval_dataloader, tb_writer, step):
     if is_main_process():
@@ -70,11 +82,9 @@ def evaluate(model_engine, eval_dataloader, tb_writer, step):
     eval_dataloader.reset()
     eval_metrics = [total_metric / count for total_metric in total_metrics]
     if is_main_process():
-        tb_writer.add_scalar('eval/loss', eval_metrics[0], step)
-        tb_writer.add_scalar('eval/top1_accuracy', eval_metrics[1], step)
-        tb_writer.add_scalar('eval/top5_accuracy', eval_metrics[2], step)
-        tb_writer.add_scalar('eval/top20_accuracy', eval_metrics[3], step)
+        write_metrics(tb_writer, 'eval', eval_metrics, step)
         tb_writer.add_scalar('eval/eval_time_sec', duration, step)
+
 
 # TODO: this is pretty hacky. Is there a way to get the state_dict from the lora model directly,
 # but still know which layers the given pipeline parallel stage actually trained?
@@ -326,10 +336,7 @@ if __name__ == '__main__':
                 tb_writer.add_scalar('train/epoch', epoch, step)
 
         if is_main_process() and step % config['logging_steps'] == 0:
-            tb_writer.add_scalar('train/loss', metrics[0], step)
-            tb_writer.add_scalar('train/top1_accuracy', metrics[1], step)
-            tb_writer.add_scalar('train/top5_accuracy', metrics[2], step)
-            tb_writer.add_scalar('train/top20_accuracy', metrics[3], step)
+            write_metrics(tb_writer, 'train', metrics, step)
             tb_writer.add_scalar('train/lr', optimizer.param_groups[0]['lr'], step)
             # TODO: gather the weight norms across all stages in the pipelined model, not just the first.
             weight_norms = get_weight_norms(pipeline_model)
