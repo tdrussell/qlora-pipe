@@ -54,24 +54,26 @@ def evaluate(model_engine, eval_dataloader, tb_writer, step):
     if is_main_process():
         print('Running eval')
     iterator = iter(eval_dataloader)
-    total_losses = None
+    total_metrics = None
     count = 0.
     start = time.time()
     while True:
-        losses = model_engine.eval_batch(iterator)
-        if total_losses is None:
-            total_losses = [0.] * len(losses)
+        metrics = model_engine.eval_batch(iterator)
+        if total_metrics is None:
+            total_metrics = [0.] * len(metrics)
         if eval_dataloader.epoch == 2:
             break
-        for i, loss in enumerate(losses):
-            total_losses[i] += loss.mean().item()
+        for i, loss in enumerate(metrics):
+            total_metrics[i] += loss.mean().item()
         count += 1
     duration = time.time() - start
     eval_dataloader.reset()
-    eval_losses = [total_loss / count for total_loss in total_losses]
+    eval_metrics = [total_metric / count for total_metric in total_metrics]
     if is_main_process():
-        tb_writer.add_scalar('eval/loss', eval_losses[0], step)
-        tb_writer.add_scalar('eval/top1_accuracy', eval_losses[1], step)
+        tb_writer.add_scalar('eval/loss', eval_metrics[0], step)
+        tb_writer.add_scalar('eval/top1_accuracy', eval_metrics[1], step)
+        tb_writer.add_scalar('eval/top5_accuracy', eval_metrics[2], step)
+        tb_writer.add_scalar('eval/top20_accuracy', eval_metrics[3], step)
         tb_writer.add_scalar('eval/eval_time_sec', duration, step)
 
 # TODO: this is pretty hacky. Is there a way to get the state_dict from the lora model directly,
@@ -312,7 +314,8 @@ if __name__ == '__main__':
     if config['eval_before_first_step'] and not config['resume_from_checkpoint']:
         evaluate(model_engine, eval_dataloader, tb_writer, 0)
     while True:
-        loss, top1_accuracy = model_engine.train_batch()
+        metrics = model_engine.train_batch()
+        metrics = [metrics.mean().item() for metrics in metrics]
 
         if train_dataloader.epoch != epoch:
             epoch = train_dataloader.epoch
@@ -323,8 +326,10 @@ if __name__ == '__main__':
                 tb_writer.add_scalar('train/epoch', epoch, step)
 
         if is_main_process() and step % config['logging_steps'] == 0:
-            tb_writer.add_scalar('train/loss', loss.mean().item(), step)
-            tb_writer.add_scalar('train/top1_accuracy', top1_accuracy.mean().item(), step)
+            tb_writer.add_scalar('train/loss', metrics[0], step)
+            tb_writer.add_scalar('train/top1_accuracy', metrics[1], step)
+            tb_writer.add_scalar('train/top5_accuracy', metrics[2], step)
+            tb_writer.add_scalar('train/top20_accuracy', metrics[3], step)
             tb_writer.add_scalar('train/lr', optimizer.param_groups[0]['lr'], step)
             # TODO: gather the weight norms across all stages in the pipelined model, not just the first.
             weight_norms = get_weight_norms(pipeline_model)

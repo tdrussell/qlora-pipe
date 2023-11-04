@@ -9,7 +9,6 @@ sentencepiece
 scipy
 tensorboard
 toml
-torchmetrics
 transformers
 
 # minimum Axolotl dependencies for what we use

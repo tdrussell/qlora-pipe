@@ -1,7 +1,6 @@
 import torch
 from torch import nn
 import transformers
-import torchmetrics
 
 
 class EmbeddingPipe(nn.Module):
@@ -75,8 +74,20 @@ class LlamaDecoderLayerPipe(nn.Module):
         return result
 
 
+def top_k_accuracy(logits, labels, k_list, ignore_index=-100):
+    keep = (labels != ignore_index)
+    labels = labels[keep].view(-1, 1)
+    max_k = max(k_list)
+    _, top_k_predictions = torch.topk(logits, max_k, dim=-1, sorted=True)
+    top_k_predictions = top_k_predictions[keep]
+    accuracies = []
+    for k in k_list:
+        accuracies.append(torch.any(top_k_predictions[:, :k] == labels, dim=-1).to(torch.float32).mean())
+    return accuracies
+
+
 class LlamaForCausalLMPipe(transformers.LlamaForCausalLM):
-    def compute_loss(self, inputs):
+    def compute_metrics(self, inputs):
         logits, labels = inputs
         logits = logits.float()
         # Shift so that tokens < n predict n
@@ -90,14 +101,8 @@ class LlamaForCausalLMPipe(transformers.LlamaForCausalLM):
 
         loss_fct = transformers.models.llama.modeling_llama.CrossEntropyLoss()
         loss = loss_fct(shift_logits, shift_labels)
-        top1_accuracy_fct = torchmetrics.classification.MulticlassAccuracy(
-            num_classes=self.config.vocab_size,
-            ignore_index=-100,
-            average='micro',
-            top_k=1
-        ).to(shift_logits.device)
-        top1_accuracy = top1_accuracy_fct(shift_logits, shift_labels)
-        return loss, top1_accuracy
+        accuracies = top_k_accuracy(shift_logits, shift_labels, k_list=[1, 5, 20])
+        return loss, *accuracies
 
     def to_layers(self):
         def initial_layer(inputs):
@@ -118,7 +123,7 @@ class LlamaForCausalLMPipe(transformers.LlamaForCausalLM):
             result.append(LlamaDecoderLayerPipe(block))
         result.append(LlamaRMSNormPipe(self.model.norm))
         result.append(LmHeadPipe(self.lm_head))
-        result.append(self.compute_loss)
+        result.append(self.compute_metrics)
         self.layer_list = result
         return result
     
