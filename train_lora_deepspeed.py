@@ -29,13 +29,6 @@ parser = deepspeed.add_config_arguments(parser)
 args = parser.parse_args()
 
 
-def get_weight_norms(model):
-    norms = []
-    for w in (p.detach() for p in model.parameters() if p.requires_grad):
-        norms.append(torch.linalg.matrix_norm(w, keepdim=True))
-    return torch.cat(norms)
-
-
 def print_model_info(model):
     if not is_main_process():
         return
@@ -106,6 +99,45 @@ def save_lora(model_engine, pipeline_model, lora_config, save_dir):
         torch.save(state_dict, os.path.join(save_dir, 'adapter_model.bin'))
         lora_config.save_pretrained(save_dir)
         shutil.rmtree(tmp_dir)
+
+
+def apply_max_norm_regularization(model, config):
+    # modifed from https://github.com/kohya-ss/sd-scripts/blob/main/networks/lora.py
+    A_keys = []
+    B_keys = []
+    norms = []
+    keys_scaled = 0
+    lora_scale = config['lora_alpha'] / config['lora_rank']
+
+    state_dict = model.state_dict()
+    for key in state_dict.keys():
+        if 'lora_A' in key:
+            A_keys.append(key)
+            B_keys.append(key.replace('lora_A', 'lora_B'))
+
+    for i in range(len(A_keys)):
+        A = state_dict[A_keys[i]]
+        B = state_dict[B_keys[i]]
+        W = B @ A
+        W *= lora_scale
+
+        if 'scale_weight_norms' in config:
+            max_norm = config['scale_weight_norms']
+            norm = W.norm().clamp(min=max_norm / 2)
+            desired = torch.clamp(norm, max=max_norm)
+            ratio = desired.cpu() / norm.cpu()
+            sqrt_ratio = ratio**0.5
+            if ratio != 1:
+                keys_scaled += 1
+                state_dict[A_keys[i]] *= sqrt_ratio
+                state_dict[B_keys[i]] *= sqrt_ratio
+        else:
+            ratio = 1.0
+        scalednorm = W.norm() * ratio
+        norms.append(scalednorm.item())
+
+    norms = torch.tensor(norms)
+    return keys_scaled, sum(norms) / len(norms), max(norms), norms
 
 
 if __name__ == '__main__':
@@ -325,6 +357,7 @@ if __name__ == '__main__':
         evaluate(model_engine, eval_dataloader, tb_writer, 0)
     while True:
         metrics = model_engine.train_batch()
+        keys_scaled, avg_norm, max_norm, norms = apply_max_norm_regularization(pipeline_model, config)
         metrics = [metrics.mean().item() for metrics in metrics]
 
         if train_dataloader.epoch != epoch:
@@ -339,9 +372,11 @@ if __name__ == '__main__':
             write_metrics(tb_writer, 'train', metrics, step)
             tb_writer.add_scalar('train/lr', optimizer.param_groups[0]['lr'], step)
             # TODO: gather the weight norms across all stages in the pipelined model, not just the first.
-            weight_norms = get_weight_norms(pipeline_model)
-            tb_writer.add_histogram('train/weight_norms_hist', weight_norms, step)
-            tb_writer.add_scalar('train/weight_norms_avg', weight_norms.mean(), step)
+            tb_writer.add_scalar('train/weights_scaled', keys_scaled, step)
+            tb_writer.add_scalar('train/avg_weight_norm', avg_norm, step)
+            tb_writer.add_scalar('train/max_weight_norm', max_norm, step)
+            tb_writer.add_histogram('train/weight_norm_hist', norms, step)
+
 
         if step % config['save_steps'] == 0:
             save_lora(model_engine, pipeline_model, lora_config, f'{run_dir}/lora-{step}')
