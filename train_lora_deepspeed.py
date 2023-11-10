@@ -53,8 +53,7 @@ def write_metrics(tb_writer, prefix, metrics, step):
     loss_quantiles = torch.quantile(losses, quantiles)
     for quantile, value in zip(quantiles, loss_quantiles):
         tb_writer.add_scalar(f'{prefix}/loss_quantile_{quantile:.3f}', value, step)
-    #tb_writer.add_scalar(f'{prefix}/loss', metrics[0].mean().item(), step)
-    tb_writer.add_scalar(f'{prefix}/loss', losses.mean().item(), step)
+    tb_writer.add_scalar(f'{prefix}/loss', metrics[0].mean().item(), step)
     tb_writer.add_histogram(f'{prefix}/log_loss_hist', torch.log(1e-10 + losses), step)
     tb_writer.add_scalar(f'{prefix}/entropy', metrics[2].mean().item(), step)
     tb_writer.add_scalar(f'{prefix}/top1_accuracy', metrics[3].mean().item(), step)

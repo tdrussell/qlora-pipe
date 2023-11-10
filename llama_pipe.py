@@ -1,4 +1,3 @@
-import math
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -77,13 +76,13 @@ class LlamaDecoderLayerPipe(nn.Module):
 
 
 def entropy_fn(logits):
-    result = 0.
+    result = []
     # There is a very wide range of chuck sizes that cause no increase in memory reported by
     # nvidia-smi (Torch re-using blocks of memory?). If you try to compute it as one tensor,
     # memory usage is huge. Chuck size of 128 seems good enough for now.
     for logits_chuck in torch.split(logits, 128):
-        result += torch.distributions.Categorical(logits=logits_chuck).entropy().sum()
-    return result / logits.size(0)
+        result.append(torch.distributions.Categorical(logits=logits_chuck).entropy())
+    return torch.cat(result)
 
 
 def top_k_accuracy(logits, labels, k_list, ignore_index=-100):
@@ -112,10 +111,13 @@ class LlamaForCausalLMPipe(transformers.LlamaForCausalLM):
         shift_labels = shift_labels.to(shift_logits.device)
 
         loss_unreduced = torch.nn.CrossEntropyLoss(reduction='none')(shift_logits, shift_labels)
+        # if we mask the labels, those loss values will be 0
+        loss_unreduced = loss_unreduced[loss_unreduced != 0]
         with torch.no_grad():
             accuracies = top_k_accuracy(shift_logits, shift_labels, k_list=[1, 5, 20])
             entropy = entropy_fn(shift_logits)
         loss = loss_unreduced.mean()
+        loss_unreduced = loss_unreduced.detach()
         return loss, loss_unreduced, entropy, *accuracies
 
     def to_layers(self):

@@ -138,15 +138,18 @@ class CustomPipelineEngine(PipelineEngine):
             for outputs in grouped_outputs:
                 # concat all the grad_accum_steps
                 concat_outputs = torch.cat(outputs)
-                # create a tensor to hold the result of concatenating across DP ranks
-                dp_size = self.grid.get_data_parallel_world_size()
-                agg_size = torch.Size([concat_outputs.size(0)*dp_size]) + concat_outputs.size()[1:]
-                agg_sizes.append(agg_size)
-                agg_output = torch.zeros(agg_size).to(self.device)
                 if self.is_data_parallel:
-                    dist.all_gather_into_tensor(agg_output, concat_outputs, group=self.grid.get_data_parallel_group())
+                    # might be different sizes across DP ranks, so, gather all the sizes
+                    sizes = [None] * self.grid.get_data_parallel_world_size()
+                    torch.distributed.all_gather_object(sizes, concat_outputs.size(), group=self.grid.get_data_parallel_group())
+                    # once we know all the sizes we can gather the results across DP ranks
+                    gather_result = [torch.zeros(size).to(self.device) for size in sizes]
+                    dist.all_gather(gather_result, concat_outputs, group=self.grid.get_data_parallel_group())
+                    # and finally, concat
+                    agg_output = torch.cat(gather_result)
                 else:
                     agg_output = concat_outputs
+                agg_sizes.append(agg_output.size())
                 all_agg_outputs.append(agg_output)
 
             # send the sizes, then broadcast to the PP ranks
