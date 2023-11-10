@@ -47,7 +47,6 @@ class CustomPipelineEngine(PipelineEngine):
         self.reset_activation_shape()
 
         self.module.train()
-        self.total_loss = None
         self._compute_loss = True
 
         # Do the work
@@ -58,7 +57,7 @@ class CustomPipelineEngine(PipelineEngine):
         self._exec_schedule(sched)
         agg_losses = self._aggregate_total_losses()
         # Actual training loss is always the first item.
-        self.agg_train_loss = agg_losses[0]
+        self.agg_train_loss = agg_losses[0].mean()
 
         self.timers(TRAIN_BATCH_TIMER).stop()
 
@@ -93,7 +92,6 @@ class CustomPipelineEngine(PipelineEngine):
 
     def eval_batch(self, data_iter):
         self.module.eval()
-        self.total_loss = None
         self._compute_loss = True
 
         # Use the provided data iterator
@@ -125,36 +123,50 @@ class CustomPipelineEngine(PipelineEngine):
 
 
     def _aggregate_total_losses(self):
-        # Scale loss, average among DP ranks, and bcast loss to the rest of my DP group
-        if isinstance(self.total_loss, torch.Tensor):
-            all_losses = [self.total_loss]
-        else:
-            all_losses = self.total_loss
+        all_agg_outputs = []
+        # gather each output for all the gradient accumulation steps
+        grouped_outputs = [list(x) for x in zip(*self.fwd_outputs)]
+        # if any are scalar, make them dim 1 so we can concat across DP ranks
+        for outputs in grouped_outputs:
+            for i, output in enumerate(outputs):
+                if output.dim() == 0:
+                    outputs[i] = torch.unsqueeze(output, 0)
 
-        all_agg_losses = []
-        for loss in all_losses:
-            if self.is_last_stage():
-                loss = self._scale_loss_by_gas(loss)
-
-                # Average loss across all data-parallel groups
-                agg_loss = loss.clone().detach()
+        if self.is_last_stage():
+            agg_sizes = []
+            # loop to gather all the outputs across DP ranks
+            for outputs in grouped_outputs:
+                # concat all the grad_accum_steps
+                concat_outputs = torch.cat(outputs)
+                # create a tensor to hold the result of concatenating across DP ranks
+                dp_size = self.grid.get_data_parallel_world_size()
+                agg_size = torch.Size([concat_outputs.size(0)*dp_size]) + concat_outputs.size()[1:]
+                agg_sizes.append(agg_size)
+                agg_output = torch.zeros(agg_size).to(self.device)
                 if self.is_data_parallel:
-                    dist.all_reduce(agg_loss, group=self.mpu.get_data_parallel_group())
-                    agg_loss /= self.dp_world_size
+                    dist.all_gather_into_tensor(agg_output, concat_outputs, group=self.grid.get_data_parallel_group())
+                else:
+                    agg_output = concat_outputs
+                all_agg_outputs.append(agg_output)
 
-                assert self.global_rank in self.grid.pp_group
-                if self.is_pipe_parallel:
-                    dist.broadcast(tensor=agg_loss, src=self.global_rank, group=self.mpu.get_pipe_parallel_group())
-                all_agg_losses.append(agg_loss)
-            else:
-                # Get loss from last stage
-                src_rank = self.grid.stage_to_global(self.num_stages - 1)
-                assert src_rank in self.grid.pp_group
-                agg_loss = torch.Tensor([0.]).to(self.device)
-                dist.broadcast(tensor=agg_loss, src=src_rank, group=self.grid.get_pipe_parallel_group())
-                all_agg_losses.append(agg_loss)
+            # send the sizes, then broadcast to the PP ranks
+            if self.is_pipe_parallel:
+                torch.distributed.broadcast_object_list([agg_sizes], src=self.global_rank, group=self.grid.get_pipe_parallel_group())
+                for agg_output in all_agg_outputs:
+                    dist.broadcast(tensor=agg_output, src=self.global_rank, group=self.grid.get_pipe_parallel_group())
+        else:
+            # get the outputs from the last stage
+            src_rank = self.grid.stage_to_global(self.num_stages - 1)
+            assert src_rank in self.grid.pp_group
+            result = [None]
+            torch.distributed.broadcast_object_list(result, src=src_rank, group=self.grid.get_pipe_parallel_group())
+            agg_sizes = result[0]
+            for agg_size in agg_sizes:
+                agg_output = torch.zeros(agg_size).to(self.device)
+                dist.broadcast(tensor=agg_output, src=src_rank, group=self.grid.get_pipe_parallel_group())
+                all_agg_outputs.append(agg_output)
 
-        return all_agg_losses
+        return all_agg_outputs
 
 
     # We override this to handle the model returning a list of "losses", but only doing backprop on the first.
@@ -223,19 +235,10 @@ class CustomPipelineEngine(PipelineEngine):
                 self.outputs = outputs
             if isinstance(losses, torch.Tensor):
                 self.loss = losses
-                self.fwd_outputs.append(self.loss.detach())
-
-                if self.total_loss is None:
-                    self.total_loss = torch.zeros_like(self.loss)
-                self.total_loss += self.loss.detach()
+                self.fwd_outputs.append([self.loss.detach()])
             else:
                 self.loss = losses[0]
                 self.fwd_outputs.append([l.detach() for l in losses])
-
-                if self.total_loss is None:
-                    self.total_loss = [torch.zeros_like(l) for l in losses]
-                for idx, l in enumerate(losses):
-                    self.total_loss[idx] += l.detach()
 
     # make our forward pass method apply
     PipelineEngine._INSTRUCTION_MAP[schedule.ForwardPass] = _exec_forward_pass

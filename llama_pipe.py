@@ -1,3 +1,4 @@
+import math
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -110,12 +111,12 @@ class LlamaForCausalLMPipe(transformers.LlamaForCausalLM):
         # Enable model parallelism
         shift_labels = shift_labels.to(shift_logits.device)
 
-        loss_fct = transformers.models.llama.modeling_llama.CrossEntropyLoss()
-        loss = loss_fct(shift_logits, shift_labels)
+        loss_unreduced = torch.nn.CrossEntropyLoss(reduction='none')(shift_logits, shift_labels)
         with torch.no_grad():
             accuracies = top_k_accuracy(shift_logits, shift_labels, k_list=[1, 5, 20])
             entropy = entropy_fn(shift_logits)
-        return loss, entropy, *accuracies
+        loss = loss_unreduced.mean()
+        return loss, loss_unreduced, entropy, *accuracies
 
     def to_layers(self):
         def initial_layer(inputs):

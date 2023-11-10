@@ -48,32 +48,38 @@ def get_most_recent_run_dir(output_dir):
 
 
 def write_metrics(tb_writer, prefix, metrics, step):
-    tb_writer.add_scalar(f'{prefix}/loss', metrics[0], step)
-    tb_writer.add_scalar(f'{prefix}/entropy', metrics[1], step)
-    tb_writer.add_scalar(f'{prefix}/top1_accuracy', metrics[2], step)
-    tb_writer.add_scalar(f'{prefix}/top5_accuracy', metrics[3], step)
-    tb_writer.add_scalar(f'{prefix}/top20_accuracy', metrics[4], step)
+    losses = metrics[1]
+    quantiles = torch.tensor([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.96, 0.97, 0.98, 0.99, 0.999]).to(losses.device)
+    loss_quantiles = torch.quantile(losses, quantiles)
+    for quantile, value in zip(quantiles, loss_quantiles):
+        tb_writer.add_scalar(f'{prefix}/loss_quantile_{quantile:.3f}', value, step)
+    #tb_writer.add_scalar(f'{prefix}/loss', metrics[0].mean().item(), step)
+    tb_writer.add_scalar(f'{prefix}/loss', losses.mean().item(), step)
+    tb_writer.add_histogram(f'{prefix}/log_loss_hist', torch.log(1e-10 + losses), step)
+    tb_writer.add_scalar(f'{prefix}/entropy', metrics[2].mean().item(), step)
+    tb_writer.add_scalar(f'{prefix}/top1_accuracy', metrics[3].mean().item(), step)
+    tb_writer.add_scalar(f'{prefix}/top5_accuracy', metrics[4].mean().item(), step)
+    tb_writer.add_scalar(f'{prefix}/top20_accuracy', metrics[5].mean().item(), step)
 
 
 def evaluate(model_engine, eval_dataloader, tb_writer, step):
     if is_main_process():
         print('Running eval')
     iterator = iter(eval_dataloader)
-    total_metrics = None
-    count = 0.
+    all_metrics = None
     start = time.time()
     while True:
         metrics = model_engine.eval_batch(iterator)
-        if total_metrics is None:
-            total_metrics = [0.] * len(metrics)
+        if all_metrics is None:
+            all_metrics = [[] for _ in range(len(metrics))]
         if eval_dataloader.epoch == 2:
             break
-        for i, loss in enumerate(metrics):
-            total_metrics[i] += loss.mean().item()
-        count += 1
+        for i, metric in enumerate(metrics):
+            all_metrics[i].append(metric)
+
     duration = time.time() - start
     eval_dataloader.reset()
-    eval_metrics = [total_metric / count for total_metric in total_metrics]
+    eval_metrics = [torch.cat(metric_list) for metric_list in all_metrics]
     if is_main_process():
         write_metrics(tb_writer, 'eval', eval_metrics, step)
         tb_writer.add_scalar('eval/eval_time_sec', duration, step)
@@ -358,7 +364,6 @@ if __name__ == '__main__':
     while True:
         metrics = model_engine.train_batch()
         keys_scaled, avg_norm, max_norm, norms = apply_max_norm_regularization(pipeline_model, config)
-        metrics = [metrics.mean().item() for metrics in metrics]
 
         if train_dataloader.epoch != epoch:
             epoch = train_dataloader.epoch
