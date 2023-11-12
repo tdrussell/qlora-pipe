@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import shutil
 import glob
 import time
+import itertools
 
 import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -48,14 +49,26 @@ def get_most_recent_run_dir(output_dir):
 
 
 def write_metrics(tb_writer, prefix, metrics, step):
-    losses = metrics[1]
+    losses = metrics[1].view(-1)
+    sorted_losses, sorted_losses_idx = torch.sort(losses)
     quantiles = torch.tensor([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.96, 0.97, 0.98, 0.99, 0.999]).to(losses.device)
-    loss_quantiles = torch.quantile(losses, quantiles)
+    quantiles_idx = [int(len(losses)*quantile) for quantile in quantiles]
+    loss_quantiles = [sorted_losses[i] for i in quantiles_idx]
     for quantile, value in zip(quantiles, loss_quantiles):
         tb_writer.add_scalar(f'{prefix}/loss_quantile_{quantile:.3f}', value, step)
     tb_writer.add_scalar(f'{prefix}/loss', metrics[0].mean().item(), step)
     tb_writer.add_histogram(f'{prefix}/log_loss_hist', torch.log(1e-10 + losses), step)
-    tb_writer.add_scalar(f'{prefix}/entropy', metrics[2].mean().item(), step)
+
+    entropy = metrics[2].view(-1)
+    assert entropy.size() == losses.size()
+    tb_writer.add_scalar(f'{prefix}/entropy', entropy.mean().item(), step)
+    sorted_entropy = entropy[sorted_losses_idx]
+    entropy_quantiles = []
+    for i, j in itertools.zip_longest(quantiles_idx, quantiles_idx[1:]):
+        entropy_quantiles.append(sorted_entropy[i:j].mean())
+    for quantile, value in zip(quantiles, entropy_quantiles):
+        tb_writer.add_scalar(f'{prefix}/entropy_quantile_{quantile:.3f}', value, step)
+
     tb_writer.add_scalar(f'{prefix}/top1_accuracy', metrics[3].mean().item(), step)
     tb_writer.add_scalar(f'{prefix}/top5_accuracy', metrics[4].mean().item(), step)
     tb_writer.add_scalar(f'{prefix}/top20_accuracy', metrics[5].mean().item(), step)

@@ -112,10 +112,11 @@ class LlamaForCausalLMPipe(transformers.LlamaForCausalLM):
 
         loss_unreduced = torch.nn.CrossEntropyLoss(reduction='none')(shift_logits, shift_labels)
         # if we mask the labels, those loss values will be 0
-        loss_unreduced = loss_unreduced[loss_unreduced != 0]
+        valid_loss = (loss_unreduced != 0)
+        loss_unreduced = loss_unreduced[valid_loss]
         with torch.no_grad():
             accuracies = top_k_accuracy(shift_logits, shift_labels, k_list=[1, 5, 20])
-            entropy = entropy_fn(shift_logits)
+            entropy = entropy_fn(shift_logits)[valid_loss]
         loss = loss_unreduced.mean()
         loss_unreduced = loss_unreduced.detach()
         return loss, loss_unreduced, entropy, *accuracies
