@@ -208,13 +208,7 @@ if __name__ == '__main__':
     def bnb_cuda_hijack(self, device):
         if getattr(self, 'already_quantized', False):
             self.data = self.data.to(device)
-            s = self.quant_state
-            if s is not None:
-                s[0] = s[0].to(device)
-                if self.compress_statistics:
-                    s[-3][0] = s[-3][0].to(device) # offset
-                    s[-3][1][0] = s[-3][1][0].to(device) # nested quantization state statitics
-                    s[-3][1][1] = s[-3][1][1].to(device) # nested quantization codebook
+            self.quant_state.to(device)
             return self
         self.already_quantized = True
         return bnb_cuda_old(self, device)
