@@ -56,7 +56,7 @@ def write_metrics(tb_writer, prefix, metrics, step):
     loss_quantiles = [sorted_losses[i] for i in quantiles_idx]
     for quantile, value in zip(quantiles, loss_quantiles):
         tb_writer.add_scalar(f'{prefix}/loss_quantile_{quantile:.3f}', value, step)
-    tb_writer.add_scalar(f'{prefix}/loss', metrics[0].mean().item(), step)
+    tb_writer.add_scalar(f'{prefix}/loss', losses.mean().item(), step)
     tb_writer.add_histogram(f'{prefix}/log_loss_hist', torch.log(1e-10 + losses), step)
 
     entropy = metrics[2].view(-1)
@@ -186,7 +186,7 @@ if __name__ == '__main__':
     deepspeed.comm.barrier()
     run_dir = get_most_recent_run_dir(config['output_dir'])
 
-    tokenizer = transformers.AutoTokenizer.from_pretrained(config['model'], local_files_only=True, use_fast=False, legacy=True)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(config['model'], local_files_only=True, use_fast=False, add_bos_token=True, add_eos_token=False)
     tokenizer.pad_token_id = 0
     tokenizer.padding_side = 'right'
 
@@ -367,6 +367,8 @@ if __name__ == '__main__':
     epoch = train_dataloader.epoch
     if config['eval_before_first_step'] and not config['resume_from_checkpoint']:
         evaluate(model_engine, eval_dataloader, tb_writer, 0)
+
+    last_checkpoint_time_sec = time.time()
     while True:
         metrics = model_engine.train_batch()
         keys_scaled, avg_norm, max_norm, norms = apply_max_norm_regularization(pipeline_model, config)
@@ -395,7 +397,7 @@ if __name__ == '__main__':
         if step % config['eval_steps'] == 0:
             evaluate(model_engine, eval_dataloader, tb_writer, step)
 
-        if step % config['checkpoint_steps'] == 0:
+        if (time.time() - last_checkpoint_time_sec) / 60 > config['checkpoint_every_n_minutes']:
             model_engine.save_checkpoint(
                 run_dir,
                 client_state={
@@ -405,6 +407,7 @@ if __name__ == '__main__':
                 save_latest=True,
                 exclude_frozen_parameters=True
             )
+            last_checkpoint_time_sec = time.time()
 
         step += 1
 
