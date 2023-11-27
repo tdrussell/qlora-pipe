@@ -213,6 +213,8 @@ if __name__ == '__main__':
         self.already_quantized = True
         return bnb_cuda_old(self, device)
     bitsandbytes.nn.modules.Params4bit.cuda = bnb_cuda_hijack
+
+    load_in_4bit = ('load_in_4bit' in config and config['load_in_4bit'])
     
     if os.path.exists(os.path.join(config['model'], 'quantize_config.json')):
         # TODO: GPTQ isn't going to work with all the new changes I made (e.g. offload_mlp_to_cpu)
@@ -228,7 +230,7 @@ if __name__ == '__main__':
         #     'torch_dtype': torch_dtype,
         # }
         # model = LlamaForCausalLMPipe.from_pretrained(config['model'], local_files_only=True, **model_params)
-    else:
+    elif load_in_4bit:
         quantization_config_params = {
             'load_in_4bit': True,
             'bnb_4bit_compute_dtype': torch_dtype,
@@ -251,6 +253,8 @@ if __name__ == '__main__':
                     module.to('cpu')
                 torch.cuda.empty_cache()
             deepspeed.comm.barrier()
+    else:
+        model = LlamaForCausalLMPipe.from_pretrained(config['model'], local_files_only=True, torch_dtype=torch_dtype)
 
     #print_model_info(model)
 
@@ -261,16 +265,16 @@ if __name__ == '__main__':
     # Remove them so we can move the model (or individual layers) between devices correctly.
     accelerate.hooks.remove_hook_from_module(model, recurse=True)
 
-    prepare_model_for_kbit_training(model, use_gradient_checkpointing=False)
-
-    # LlamaRMSNorm layers are in fp32 after kbit_training, so we need to
-    # convert them back to fp16/bf16 for flash-attn compatibility.
-    for name, module in model.named_modules():
-        if "norm" in name:
-            module.to(torch_dtype)
-        if "lm_head" in name or "embed_tokens" in name:
-            if hasattr(module, "weight"):
+    if load_in_4bit:
+        prepare_model_for_kbit_training(model, use_gradient_checkpointing=False)
+        # LlamaRMSNorm layers are in fp32 after kbit_training, so we need to
+        # convert them back to fp16/bf16 for flash-attn compatibility.
+        for name, module in model.named_modules():
+            if "norm" in name:
                 module.to(torch_dtype)
+            if "lm_head" in name or "embed_tokens" in name:
+                if hasattr(module, "weight"):
+                    module.to(torch_dtype)
 
     lora_config = LoraConfig(
         r=config['lora_rank'],
