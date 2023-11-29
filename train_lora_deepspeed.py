@@ -158,6 +158,15 @@ def apply_max_norm_regularization(model, config):
     return keys_scaled, sum(norms) / len(norms), max(norms), norms
 
 
+def parse_layers_to_transform(spec):
+    parts = spec.split(',')
+    result = []
+    for part in parts:
+        start, stop = part.split(':')
+        result.extend(range(int(start), int(stop)+1))
+    return result
+
+
 if __name__ == '__main__':
     # TODO: if resuming from checkpoint, probably should read all config files from checkpoint dir
     # rather than assume they are unchanged on the command line
@@ -276,11 +285,14 @@ if __name__ == '__main__':
                 if hasattr(module, "weight"):
                     module.to(torch_dtype)
 
+    layers_to_transform = parse_layers_to_transform(config['layers_to_transform']) if 'layers_to_transform' in config else None
+
     lora_config = LoraConfig(
         r=config['lora_rank'],
         lora_alpha=config['lora_alpha'],
         target_modules=config['target_modules'],
         lora_dropout=config['lora_dropout'],
+        layers_to_transform=layers_to_transform,
         bias='none',
         task_type='CAUSAL_LM',
     )
