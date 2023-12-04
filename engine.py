@@ -1,4 +1,7 @@
+import os
+
 import torch
+import torch.nn as nn
 import deepspeed
 from deepspeed.accelerator import get_accelerator
 from deepspeed import comm as dist
@@ -7,6 +10,8 @@ from deepspeed.runtime.pipe.engine import PipelineEngine, TRAIN_BATCH_TIMER, PIP
 from deepspeed.runtime.pipe import schedule
 from deepspeed.runtime.utils import PartitionedTensor
 from deepspeed.runtime.activation_checkpointing import checkpointing as ds_checkpointing
+from deepspeed.runtime.pipe.module import PipelineModule
+from deepspeed.runtime.pipe.topology import PipeDataParallelTopology, PipelineParallelGrid
 
 
 def initialize(args=None,
@@ -32,7 +37,7 @@ def initialize(args=None,
         config=config,
         config_class=config_class
     )
-    
+
     return engine, engine.optimizer
 
 
@@ -245,3 +250,104 @@ class CustomPipelineEngine(PipelineEngine):
 
     # make our forward pass method apply
     PipelineEngine._INSTRUCTION_MAP[schedule.ForwardPass] = _exec_forward_pass
+
+
+# This is just the Deepspeed PipelineModule, but with initialization split into two methods. We
+# need this because part of the initialization (in __init__()) needs all processes to call it
+# together, but actually setting up the layers we want do one process at a time to save RAM.
+class CustomPipelineModule(PipelineModule):
+
+    def __init__(self,
+                 num_stages=None,
+                 topology=None,
+                 loss_fn=None,
+                 seed_layers=False,
+                 seed_fn=None,
+                 base_seed=1234,
+                 partition_method='parameters',
+                 activation_checkpoint_interval=0,
+                 activation_checkpoint_func=ds_checkpointing.checkpoint,
+                 checkpointable_layers=None):
+
+        super(PipelineModule, self).__init__()
+
+        if num_stages is None and topology is None:
+            raise RuntimeError('must provide num_stages or topology')
+
+        self.micro_offset = 0
+
+        self.loss_fn = loss_fn
+
+        self.checkpointable_layers = checkpointable_layers
+        if checkpointable_layers is not None:
+            assert isinstance(checkpointable_layers, list), "param `checkpointable_layers` must be type of list."
+
+        self.seed_layers = seed_layers
+        self.seed_fn = seed_fn
+        self.base_seed = base_seed
+        if dist.get_rank() == 0:
+            try:
+                seed_str = self.seed_fn.__name__
+            except AttributeError:
+                seed_str = None
+            print(f'SEED_LAYERS={self.seed_layers} BASE_SEED={self.base_seed} SEED_FN={seed_str}')
+
+        # Setup world info
+        self.world_group = dist.new_group(ranks=range(dist.get_world_size()))
+        self.global_rank = dist.get_rank(group=self.world_group)
+        self.world_size = dist.get_world_size(group=self.world_group)
+        self.local_rank = int(os.environ.get("LOCAL_RANK", None))
+        assert self.local_rank is not None
+
+        if topology:
+            self._topo = topology
+            self.num_stages = self._topo.get_dim('pipe')
+        else:
+            self.num_stages = num_stages
+            if topology is None:
+                if self.world_size % self.num_stages != 0:
+                    raise RuntimeError(
+                        f'num_stages ({self.num_stages}) must divide distributed world size ({self.world_size})')
+                dp = self.world_size // num_stages
+                topology = PipeDataParallelTopology(num_pp=num_stages, num_dp=dp)
+                self._topo = topology
+
+        # Construct communicators for pipeline topology
+        self._grid = PipelineParallelGrid(process_group=self.world_group, topology=self._topo)
+
+        self.partition_method = partition_method
+        self.stage_id = self._topo.get_coord(self.global_rank).pipe
+        self.activation_checkpoint_interval = activation_checkpoint_interval
+        self.activation_checkpoint_func = activation_checkpoint_func
+        # if configuration use_reentrant = False, self.activation_checkpoint_func will be set to ``checkpointing.non_reentrant_checkpoint``
+
+
+    def init_layers(self, layers):
+        # Initialize partition information
+        self._layer_specs = list(layers)
+        self._num_layers = len(self._layer_specs)
+        self._local_start = 0
+        self._local_stop = None
+        self._partition_layers(method=self.partition_method)
+
+        self.forward_funcs = []
+        self.fwd_map = {}
+        self.tied_modules = nn.ModuleDict()
+        self.tied_weight_attrs = {}
+
+        # Offset the random seed by the stage ID.
+        #newseed = get_accelerator().initial_seed() + self._grid.get_stage_id()
+        #ds_utils.set_random_seed(newseed)
+
+        #with torch.random.fork_rng(devices=[get_accelerator().current_device_name()]):
+        self._build()
+
+        self.tied_comms = self._index_tied_modules()
+        self._synchronize_tied_weights()
+
+        # Free memory. We don't need all the layers anymore.
+        del self._layer_specs
+
+
+    def move_layers_to_device(self):
+        self.to(get_accelerator().device_name(self.local_rank))

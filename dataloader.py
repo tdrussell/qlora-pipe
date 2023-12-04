@@ -52,7 +52,7 @@ class DistributedBatchSamper(torch.utils.data.Sampler):
             indices = [(i, len(self.dataset[i]['input_ids'])) for i in shuffle_idx]
         else:
             indices = [(i, len(item['input_ids'])) for i, item in enumerate(self.dataset)]
-        
+
         if not self.drop_last:
             # add extra samples to make it evenly divisible
             padding_size = self.total_size - len(indices)
@@ -155,13 +155,13 @@ class PipelineDataLoader:
         )
         self.data = self._pull_batches_from_dataloader()
         self.num_batches_pulled = 0
-    
+
     def state_dict(self):
         return {
             'epoch': self.epoch,
             'num_batches_pulled': self.num_batches_pulled,
         }
-    
+
     def load_state_dict(self, state_dict):
         self.epoch = state_dict['epoch']
         self.num_batches_pulled = state_dict['num_batches_pulled']
@@ -179,7 +179,7 @@ class PipelineDataLoader:
         for epoch in result:
             max_epoch = max(epoch, max_epoch)
         self.epoch = max_epoch
-    
+
 
 # for testing
 if __name__ == '__main__':

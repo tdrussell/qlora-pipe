@@ -9,7 +9,7 @@ class EmbeddingPipe(nn.Module):
         super().__init__()
         self.orig = orig
         self._prepare_decoder_attention_mask = prepare_decoder_attention_mask
-    
+
     def forward(self, inputs):
         input_ids, attention_mask, position_ids, labels = inputs
         inputs_embeds = self.orig(input_ids)
@@ -40,7 +40,7 @@ class LlamaRMSNormPipe(nn.Module):
     def forward(self, inputs):
         hidden_states, _, _, labels = inputs
         return self.orig(hidden_states), labels
-    
+
 
 class LmHeadPipe(nn.Module):
     def __init__(self, orig):
@@ -57,7 +57,7 @@ class LlamaDecoderLayerPipe(nn.Module):
         super().__init__()
         self.orig = orig
         self.offload_mlp_to_cpu = False
-    
+
     def forward(self, inputs):
         hidden_states, attention_mask, position_ids, labels = inputs
         if self.offload_mlp_to_cpu:
@@ -143,7 +143,7 @@ class LlamaForCausalLMPipe(transformers.LlamaForCausalLM):
         result.append(self.compute_metrics)
         self.layer_list = result
         return result
-    
+
     def offload_mlp_to_cpu(self):
         for layer in self.layer_list:
             if type(layer) != LlamaDecoderLayerPipe:
