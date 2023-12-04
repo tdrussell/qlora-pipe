@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 import transformers
 import accelerate
+from deepspeed import comm as dist
 
 from axolotl.utils.collators import DataCollatorForSeq2Seq
 
@@ -166,6 +167,18 @@ class PipelineDataLoader:
         self.num_batches_pulled = state_dict['num_batches_pulled']
         self.dataloader = accelerate.skip_first_batches(self.dataloader, self.num_batches_pulled)
         self.data = self._pull_batches_from_dataloader()
+
+    # Only the first and last stages in the pipeline pull from the dataloader. Parts of the code need
+    # to know the epoch, so we synchronize the epoch so the processes that don't use the dataloader
+    # know the current epoch.
+    def sync_epoch(self):
+        process_group = dist.get_world_group()
+        result = [None] * dist.get_world_size(process_group)
+        torch.distributed.all_gather_object(result, self.epoch, group=process_group)
+        max_epoch = -1
+        for epoch in result:
+            max_epoch = max(epoch, max_epoch)
+        self.epoch = max_epoch
     
 
 # for testing

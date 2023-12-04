@@ -82,6 +82,7 @@ def evaluate(model_engine, eval_dataloader, tb_writer, step):
     start = time.time()
     while True:
         metrics = model_engine.eval_batch(iterator)
+        eval_dataloader.sync_epoch()
         if all_metrics is None:
             all_metrics = [[] for _ in range(len(metrics))]
         if eval_dataloader.epoch == 2:
@@ -387,6 +388,7 @@ if __name__ == '__main__':
     last_checkpoint_time_sec = time.time()
     while True:
         metrics = model_engine.train_batch()
+        train_dataloader.sync_epoch()
         keys_scaled, avg_norm, max_norm, norms = apply_max_norm_regularization(pipeline_model, config)
 
         if train_dataloader.epoch != epoch:
