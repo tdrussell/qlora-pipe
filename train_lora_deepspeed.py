@@ -277,6 +277,7 @@ def load_pipeline_model(config):
     # Now move just the layers this process owns to the right device.
     pipeline_model.move_layers_to_device()
     gc.collect()
+    torch.cuda.empty_cache()
     return pipeline_model, lora_config
 
 
@@ -345,6 +346,14 @@ if __name__ == '__main__':
         model=pipeline_model,
         model_parameters=parameters_to_train,
     )
+
+    # TODO: the main DeepSpeedEngine forces all parameters to the GPU, and also does things like
+    # broadcast all parameters from data parallel rank 0 to all other ranks. Thus, MLP offloading
+    # must come after engine.initialize(). If we want to avoid loading everything onto GPUs only
+    # to offload the MLPs, we have to rewrite a lot of code to work around things.
+    if config['offload_mlp_to_cpu']:
+        assert config['activation_checkpointing']  # MLP offloading only works with activation checkpointing
+        pipeline_model.offload_mlp_to_cpu()
 
     train_dataloader = dataloader.PipelineDataLoader(
         train_data,

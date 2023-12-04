@@ -52,27 +52,46 @@ class LmHeadPipe(nn.Module):
         return self.orig(hidden_states), labels
 
 
+def move_data_to_device(module, device):
+    # handle lora
+    if hasattr(module, 'base_layer'):
+        module = module.base_layer
+    orig_data = module.weight.data
+    module.weight.data = orig_data.to(device, non_blocking=True)
+    return orig_data
+
+
+def set_data(module, data):
+    # handle lora
+    if hasattr(module, 'base_layer'):
+        module = module.base_layer
+    module.weight.data = data
+
+
 class LlamaDecoderLayerPipe(nn.Module):
     def __init__(self, orig):
         super().__init__()
         self.orig = orig
-        self.offload_mlp_to_cpu = False
+        self.mlp_offloaded_to_cpu = False
 
     def forward(self, inputs):
         hidden_states, attention_mask, position_ids, labels = inputs
-        if self.offload_mlp_to_cpu:
-            cpu_up_proj = self.orig.mlp.up_proj.weight.data
-            cpu_down_proj = self.orig.mlp.down_proj.weight.data
-            cpu_gate_proj = self.orig.mlp.gate_proj.weight.data
-            self.orig.mlp.up_proj.weight.data = cpu_up_proj.to(hidden_states.device, non_blocking=True)
-            self.orig.mlp.down_proj.weight.data = cpu_down_proj.to(hidden_states.device, non_blocking=True)
-            self.orig.mlp.gate_proj.weight.data = cpu_gate_proj.to(hidden_states.device, non_blocking=True)
+        if self.mlp_offloaded_to_cpu:
+            cpu_up_proj = move_data_to_device(self.orig.mlp.up_proj, hidden_states.device)
+            cpu_down_proj = move_data_to_device(self.orig.mlp.down_proj, hidden_states.device)
+            cpu_gate_proj = move_data_to_device(self.orig.mlp.gate_proj, hidden_states.device)
         result = (self.orig(hidden_states, attention_mask=attention_mask, position_ids=position_ids)[0], attention_mask, position_ids, labels)
-        if self.offload_mlp_to_cpu:
-            self.orig.mlp.up_proj.weight.data = cpu_up_proj
-            self.orig.mlp.down_proj.weight.data = cpu_down_proj
-            self.orig.mlp.gate_proj.weight.data = cpu_gate_proj
+        if self.mlp_offloaded_to_cpu:
+            set_data(self.orig.mlp.up_proj, cpu_up_proj)
+            set_data(self.orig.mlp.down_proj, cpu_down_proj)
+            set_data(self.orig.mlp.gate_proj, cpu_gate_proj)
         return result
+
+    def offload_mlp_to_cpu(self):
+        self.mlp_offloaded_to_cpu = True
+        move_data_to_device(self.orig.mlp.up_proj, 'cpu')
+        move_data_to_device(self.orig.mlp.down_proj, 'cpu')
+        move_data_to_device(self.orig.mlp.gate_proj, 'cpu')
 
 
 def entropy_fn(logits):
@@ -143,13 +162,3 @@ class LlamaForCausalLMPipe(transformers.LlamaForCausalLM):
         result.append(self.compute_metrics)
         self.layer_list = result
         return result
-
-    def offload_mlp_to_cpu(self):
-        for layer in self.layer_list:
-            if type(layer) != LlamaDecoderLayerPipe:
-                continue
-            layer.offload_mlp_to_cpu = True
-            layer.orig.mlp.up_proj.weight.data = layer.orig.mlp.up_proj.weight.data.to('cpu')
-            layer.orig.mlp.down_proj.weight.data = layer.orig.mlp.down_proj.weight.data.to('cpu')
-            layer.orig.mlp.gate_proj.weight.data = layer.orig.mlp.gate_proj.weight.data.to('cpu')
-        torch.cuda.empty_cache()

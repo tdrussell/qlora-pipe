@@ -351,3 +351,12 @@ class CustomPipelineModule(PipelineModule):
 
     def move_layers_to_device(self):
         self.to(get_accelerator().device_name(self.local_rank))
+
+
+    def offload_mlp_to_cpu(self):
+        for module in self.modules():
+            if module == self:
+                continue
+            if hasattr(module, 'offload_mlp_to_cpu'):
+                module.offload_mlp_to_cpu()
+        torch.cuda.empty_cache()
