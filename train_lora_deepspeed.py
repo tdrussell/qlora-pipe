@@ -13,12 +13,13 @@ from torch.utils.tensorboard import SummaryWriter
 import transformers
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 import deepspeed
+from deepspeed.runtime.pipe.module import PipelineModule
 import accelerate
 import toml
 import bitsandbytes
 
 from dataset_utils import load_dataset
-from llama_pipe import LlamaForCausalLMPipe
+import llama_pipe
 import dataloader
 from utils import *
 import engine
@@ -208,7 +209,7 @@ def load_pipeline_model(config):
             #     'quantization_config': transformers.GPTQConfig(bits=4, disable_exllama=True),
             #     'torch_dtype': torch_dtype,
             # }
-            # model = LlamaForCausalLMPipe.from_pretrained(config['model'], local_files_only=True, **model_params)
+            # model = llama_pipe.LlamaForCausalLMPipe.from_pretrained(config['model'], local_files_only=True, **model_params)
         elif load_in_4bit:
             quantization_config_params = {
                 'load_in_4bit': True,
@@ -224,11 +225,11 @@ def load_pipeline_model(config):
                 'low_cpu_mem_usage': True,
             }
 
-            model = LlamaForCausalLMPipe.from_pretrained(config['model'], local_files_only=True, **model_params)
+            model = llama_pipe.LlamaForCausalLMPipe.from_pretrained(config['model'], local_files_only=True, **model_params)
             for module in model.children():
                 module.to('cpu')
         else:
-            model = LlamaForCausalLMPipe.from_pretrained(config['model'], local_files_only=True, torch_dtype=torch_dtype)
+            model = llama_pipe.LlamaForCausalLMPipe.from_pretrained(config['model'], local_files_only=True, torch_dtype=torch_dtype)
 
         #print_model_info(model)
 
@@ -278,6 +279,70 @@ def load_pipeline_model(config):
     pipeline_model.move_layers_to_device()
     gc.collect()
     torch.cuda.empty_cache()
+    return pipeline_model, lora_config
+
+
+def load_pipeline_model_new(config):
+    if config['torch_dtype'] == 'float16':
+        torch_dtype = torch.float16
+    elif config['torch_dtype'] == 'bfloat16':
+        torch_dtype = torch.bfloat16
+    else:
+        raise NotImplementedError()
+    quantization_config_params = {
+        'load_in_4bit': True,
+        'bnb_4bit_compute_dtype': torch_dtype,
+        'bnb_4bit_quant_type': 'nf4',
+        'bnb_4bit_use_double_quant': config['use_double_quant'],
+    }
+    quantization_config = transformers.BitsAndBytesConfig(**quantization_config_params)
+    model = llama_pipe.load_pipeline_model(config['model'], quantization_config=quantization_config, dtype=torch_dtype)
+
+    layers_to_transform = parse_layers_to_transform(config['layers_to_transform']) if 'layers_to_transform' in config else None
+    lora_config = LoraConfig(
+        r=config['lora_rank'],
+        lora_alpha=config['lora_alpha'],
+        target_modules=config['target_modules'],
+        lora_dropout=config['lora_dropout'],
+        layers_to_transform=layers_to_transform,
+        bias='none',
+        task_type='CAUSAL_LM',
+    )
+
+    if config['activation_checkpointing']:
+        pipeline_model = PipelineModule(
+            layers=model.to_layer_specs(),
+            num_stages=config['pipeline_stages'],
+            activation_checkpoint_interval=1,
+            checkpointable_layers=['LlamaDecoderLayerPipe'],
+            activation_checkpoint_func=deepspeed.checkpointing.checkpoint,
+            # TODO: switch back to 'parameters'. Probably want some custom code, it builds the LayerSpec
+            # just to find out the parameter count, which triggers loading and quantization unnecessarily.
+            partition_method='uniform'
+        )
+    else:
+        pipeline_model = PipelineModule(
+            layers=model.to_layer_specs(),
+            num_stages=config['pipeline_stages'],
+            # TODO: switch back to 'parameters'
+            partition_method='uniform'
+        )
+
+    prepare_model_for_kbit_training(model, use_gradient_checkpointing=False)
+    # LlamaRMSNorm layers are in fp32 after kbit_training, so we need to
+    # convert them back to fp16/bf16 for flash-attn compatibility.
+    for name, module in model.named_modules():
+        if "norm" in name:
+            module.to(torch_dtype)
+        if "lm_head" in name or "embed_tokens" in name:
+            if hasattr(module, "weight"):
+                module.to(torch_dtype)
+
+    lora_model = get_peft_model(model, lora_config)
+    lora_model.config.use_cache = False
+    for name, p in lora_model.named_parameters():
+        p.original_name = name
+
     return pipeline_model, lora_config
 
 
@@ -337,7 +402,8 @@ if __name__ == '__main__':
         return bnb_cuda_old(self, device)
     bitsandbytes.nn.modules.Params4bit.cuda = bnb_cuda_hijack
 
-    pipeline_model, lora_config = load_pipeline_model(config)
+    #pipeline_model, lora_config = load_pipeline_model(config)
+    pipeline_model, lora_config = load_pipeline_model_new(config)
 
     parameters_to_train = [p for p in pipeline_model.parameters() if p.requires_grad]
 
@@ -353,7 +419,11 @@ if __name__ == '__main__':
     # to offload the MLPs, we have to rewrite a lot of code to work around things.
     if config['offload_mlp_to_cpu']:
         assert config['activation_checkpointing']  # MLP offloading only works with activation checkpointing
-        pipeline_model.offload_mlp_to_cpu()
+        #pipeline_model.offload_mlp_to_cpu()
+        for module in pipeline_model.modules():
+            if hasattr(module, 'offload_mlp_to_cpu'):
+                module.offload_mlp_to_cpu()
+        torch.cuda.empty_cache()
 
     train_dataloader = dataloader.PipelineDataLoader(
         train_data,
