@@ -8,6 +8,7 @@ import torch
 from datasets import Dataset
 from axolotl.utils.dict import DictDefault
 from axolotl.utils.data import prepare_dataset
+import jsonlines
 
 from utils import *
 
@@ -49,6 +50,9 @@ def load_dataset_into_dict(path):
     if path.endswith('.json'):
         with open(path) as f:
             return json.load(f)
+    if path.endswith('.jsonl'):
+        with jsonlines.open(path) as reader:
+            return list(reader)
     elif path.endswith('.txt'):
         with open(path) as f:
             text = f.read()
