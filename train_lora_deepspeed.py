@@ -464,8 +464,14 @@ if __name__ == '__main__':
     step = 1
     if config['resume_from_checkpoint']:
         load_path, client_state = model_engine.load_checkpoint(run_dir, load_module_strict=False, load_lr_scheduler_states=config['load_lr_scheduler_states'])
+        deepspeed.comm.barrier()  # just so the print below doesn't get swamped
         assert load_path is not None
-        train_dataloader.load_state_dict(client_state['custom_loader'])
+        # for some use cases, we may want to not resume the dataloader
+        if 'reset_dataloader' in config and config['reset_dataloader']:
+            if is_main_process():
+                print('skipping dataloader state_dict load')
+        else:
+            train_dataloader.load_state_dict(client_state['custom_loader'])
         step = client_state['step'] + 1
 
     if 'force_constant_lr' in config:
