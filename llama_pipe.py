@@ -130,7 +130,7 @@ class LlamaForCausalLMPipe(transformers.LlamaForCausalLM):
     def __init__(self, model_path):
         config = transformers.LlamaConfig.from_pretrained(model_path)
         super().__init__(config)
-        self.loader_util = LoaderUtil(model_path, self)
+        self.loader_util = LoaderUtil(model_path)
 
     def compute_metrics(self, inputs):
         logits, labels = inputs
@@ -225,9 +225,8 @@ def load_pipeline_model(model_path, quantization_config=None, dtype=None):
 
 class LoaderUtil:
 
-    def __init__(self, model_path, parent_model):
+    def __init__(self, model_path):
         self.model_path = model_path
-        self.parent_model = parent_model
         self.local_rank = int(os.environ.get("LOCAL_RANK", None))
         assert self.local_rank is not None
         self.device = get_accelerator().device_name(self.local_rank)
