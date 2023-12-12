@@ -346,6 +346,23 @@ def load_pipeline_model_new(config):
     return pipeline_model, lora_config
 
 
+last_checkpoint_time = None
+def need_to_checkpoint():
+    global last_checkpoint_time
+    checkpoint = False
+    # rank 0 tracks if we need to checkpoint, broadcasts to everyone else
+    if is_main_process():
+        current_time = time.time()
+        if last_checkpoint_time is None:
+            last_checkpoint_time = current_time
+        elif (current_time - last_checkpoint_time) / 60 > config['checkpoint_every_n_minutes']:
+            checkpoint = True
+            last_checkpoint_time = current_time
+    result = [checkpoint]
+    torch.distributed.broadcast_object_list(result, src=0)
+    return result[0]
+
+
 if __name__ == '__main__':
     # TODO: if resuming from checkpoint, probably should read all config files from checkpoint dir
     # rather than assume they are unchanged on the command line
@@ -497,7 +514,6 @@ if __name__ == '__main__':
     if config['eval_before_first_step'] and not config['resume_from_checkpoint']:
         evaluate(model_engine, eval_dataloader, tb_writer, 0)
 
-    last_checkpoint_time_sec = time.time()
     while True:
         metrics = model_engine.train_batch()
         train_dataloader.sync_epoch()
@@ -527,7 +543,7 @@ if __name__ == '__main__':
         if step % config['eval_steps'] == 0:
             evaluate(model_engine, eval_dataloader, tb_writer, step)
 
-        if (time.time() - last_checkpoint_time_sec) / 60 > config['checkpoint_every_n_minutes']:
+        if need_to_checkpoint():
             model_engine.save_checkpoint(
                 run_dir,
                 client_state={
@@ -537,7 +553,6 @@ if __name__ == '__main__':
                 save_latest=True,
                 exclude_frozen_parameters=True
             )
-            last_checkpoint_time_sec = time.time()
 
         step += 1
 
