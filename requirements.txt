@@ -9,8 +9,9 @@ scipy==1.11.3
 sentencepiece==0.1.99
 tensorboard==2.15.1
 toml==0.10.2
-transformers==4.35.0
 jsonlines==4.0.0
+git+https://github.com/huggingface/transformers@f4db565b695582891e43a5e042e5d318e28f20b8
+flash-attn==2.3.6
 
 # minimum Axolotl dependencies for what we use
 addict==2.4.0

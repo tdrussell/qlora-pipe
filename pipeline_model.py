@@ -31,7 +31,7 @@ def top_k_accuracy(logits, labels, k_list, ignore_index=-100):
 
 class PipelineModel(nn.Module):
 
-    def __init__(self, model_path, quantization_config, dtype=None):
+    def __init__(self, model_path, quantization_config):
         self.loader_util = LoaderUtil(model_path)
 
         modules_to_not_convert = get_keys_to_not_convert(self)
@@ -43,8 +43,6 @@ class PipelineModel(nn.Module):
         # Make sure to set this or PEFT (and probably other things) will break in strange ways.
         # We only need this because we do the loading and quanting ourselves.
         self.is_loaded_in_4bit = True
-        if dtype is not None:
-            self.to(dtype)
 
         for name, p in self.named_parameters():
             p.original_name = name

@@ -54,7 +54,7 @@ def get_most_recent_run_dir(output_dir):
 def write_metrics(tb_writer, prefix, metrics, step):
     losses = metrics[1].view(-1)
     sorted_losses, sorted_losses_idx = torch.sort(losses)
-    quantiles = torch.tensor([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.96, 0.97, 0.98, 0.99, 0.999]).to(losses.device)
+    quantiles = torch.tensor([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.96, 0.97, 0.98, 0.99, 0.999], dtype=torch.float32).to(losses.device)
     quantiles_idx = [int(len(losses)*quantile) for quantile in quantiles]
     loss_quantiles = [sorted_losses[i] for i in quantiles_idx]
     for quantile, value in zip(quantiles, loss_quantiles):
@@ -158,7 +158,7 @@ def apply_max_norm_regularization(model, config):
         scalednorm = W.norm() * ratio
         norms.append(scalednorm.item())
 
-    norms = torch.tensor(norms)
+    norms = torch.tensor(norms, dtype=torch.float32)
     return keys_scaled, sum(norms) / len(norms), max(norms), norms
 
 
@@ -193,7 +193,7 @@ def load_pipeline_model_with_lora(config):
         'bnb_4bit_use_double_quant': config['use_double_quant'],
     }
     quantization_config = transformers.BitsAndBytesConfig(**quantization_config_params)
-    model = llama_pipe.LlamaForCausalLMPipe(config['model'], quantization_config=quantization_config, dtype=torch_dtype)
+    model = llama_pipe.LlamaForCausalLMPipe(config['model'], quantization_config=quantization_config)
 
     layers_to_transform = parse_layers_to_transform(config['layers_to_transform']) if 'layers_to_transform' in config else None
     lora_config = LoraConfig(
@@ -266,15 +266,15 @@ if __name__ == '__main__':
     with open(args.config) as f:
         config = toml.load(f)
 
-    if config['flash_attention']:
-        from llama_attn_hijack_flash import replace_llama_attn_with_flash_attn
-        replace_llama_attn_with_flash_attn(packed=False)
-    elif config['xformers_attention']:
-        from llama_attn_hijack_xformers import hijack_llama_attention
-        hijack_llama_attention()
-    elif config['sdp_attention']:
-        from llama_attn_hijack_sdp import hijack_llama_sdp_attention
-        hijack_llama_sdp_attention()
+    # if config['flash_attention']:
+    #     from llama_attn_hijack_flash import replace_llama_attn_with_flash_attn
+    #     replace_llama_attn_with_flash_attn(packed=False)
+    # elif config['xformers_attention']:
+    #     from llama_attn_hijack_xformers import hijack_llama_attention
+    #     hijack_llama_attention()
+    # elif config['sdp_attention']:
+    #     from llama_attn_hijack_sdp import hijack_llama_sdp_attention
+    #     hijack_llama_sdp_attention()
 
     deepspeed.init_distributed()
 
@@ -297,13 +297,6 @@ if __name__ == '__main__':
     # for testing
     # train_data = train_data.select(list(range(20)))
     # eval_data = eval_data.select(list(range(20)))
-
-    if config['torch_dtype'] == 'float16':
-        torch_dtype = torch.float16
-    elif config['torch_dtype'] == 'bfloat16':
-        torch_dtype = torch.bfloat16
-    else:
-        raise NotImplementedError()
 
     # Ugly hack so we can move quantized models from GPU to CPU, and back to GPU again without triggering quantization a second time.
     bnb_cuda_old = bitsandbytes.nn.modules.Params4bit.cuda
