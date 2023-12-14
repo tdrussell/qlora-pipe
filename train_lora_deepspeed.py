@@ -24,6 +24,8 @@ from utils import *
 import engine
 import llama_pipe
 
+DTYPE_MAP = {'float32': torch.float32, 'float16': torch.float16, 'bfloat16': torch.bfloat16}
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--config', help='Path to TOML configuration file.')
 parser.add_argument('--ignore_cache', action='store_true')
@@ -180,15 +182,9 @@ def one_at_a_time():
 
 
 def load_pipeline_model_with_lora(config):
-    if config['torch_dtype'] == 'float16':
-        torch_dtype = torch.float16
-    elif config['torch_dtype'] == 'bfloat16':
-        torch_dtype = torch.bfloat16
-    else:
-        raise NotImplementedError()
     quantization_config_params = {
         'load_in_4bit': True,
-        'bnb_4bit_compute_dtype': torch_dtype,
+        'bnb_4bit_compute_dtype': DTYPE_MAP[config['bnb_compute_dtype']],
         'bnb_4bit_quant_type': 'nf4',
         'bnb_4bit_use_double_quant': config['use_double_quant'],
     }
@@ -229,13 +225,18 @@ def load_pipeline_model_with_lora(config):
     # LlamaRMSNorm layers are in fp32 after kbit_training, so we need to
     # convert them back to fp16/bf16 for flash-attn compatibility.
     for name, module in model.named_modules():
+        dtype = DTYPE_MAP[config['bnb_compute_dtype']]
         if "norm" in name:
-            module.to(torch_dtype)
+            module.to(dtype)
         if "lm_head" in name or "embed_tokens" in name:
             if hasattr(module, "weight"):
-                module.to(torch_dtype)
+                module.to(dtype)
 
+    # If we set the default dtype to bfloat16 at the very beginning, the loss blows up.
+    # If we set it only here for the lora weights, everything is fine. ¯\_(ツ)_/¯
+    torch.set_default_dtype(DTYPE_MAP[config['lora_weight_dtype']])
     lora_model = get_peft_model(model, lora_config)
+    torch.set_default_dtype(torch.float32)
     lora_model.config.use_cache = False
     for name, p in lora_model.named_parameters():
         p.original_name = name
