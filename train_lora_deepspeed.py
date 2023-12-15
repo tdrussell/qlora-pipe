@@ -6,14 +6,14 @@ import glob
 import time
 import itertools
 from contextlib import contextmanager
-import gc
+import json
 
 import torch
 from torch.utils.tensorboard import SummaryWriter
 import transformers
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 import deepspeed
-from deepspeed.runtime.pipe.module import PipelineModule
+from deepspeed.runtime.pipe.module import PipelineModule, LayerSpec
 import accelerate
 import toml
 import bitsandbytes
@@ -23,6 +23,7 @@ import dataloader
 from utils import *
 import engine
 import llama_pipe
+import mixtral_pipe
 
 DTYPE_MAP = {'float32': torch.float32, 'float16': torch.float16, 'bfloat16': torch.bfloat16}
 
@@ -187,9 +188,20 @@ def load_pipeline_model_with_lora(config):
         'bnb_4bit_compute_dtype': DTYPE_MAP[config['bnb_compute_dtype']],
         'bnb_4bit_quant_type': 'nf4',
         'bnb_4bit_use_double_quant': config['use_double_quant'],
+        'llm_int8_skip_modules': ['lm_head', 'gate'],  # needed for mixtral
     }
     quantization_config = transformers.BitsAndBytesConfig(**quantization_config_params)
-    model = llama_pipe.LlamaForCausalLMPipe(config['model'], quantization_config=quantization_config)
+
+    with open(os.path.join(config['model'], 'config.json')) as f:
+        model_config = json.load(f)
+        model_type = model_config['model_type'] if 'model_type' in model_config else 'llama'
+
+    if model_type == 'llama' or model_type == 'mistral':
+        model = llama_pipe.LlamaForCausalLMPipe(config['model'], quantization_config=quantization_config)
+    elif model_type == 'mixtral':
+        model = mixtral_pipe.MixtralForCausalLMPipe(config['model'], quantization_config=quantization_config)
+    else:
+        raise NotImplementedError()
 
     layers_to_transform = parse_layers_to_transform(config['layers_to_transform']) if 'layers_to_transform' in config else None
     lora_config = LoraConfig(
@@ -202,23 +214,30 @@ def load_pipeline_model_with_lora(config):
         task_type='CAUSAL_LM',
     )
 
+    # CAREFUL! The "primary" layers of the model have to have 'decoderlayer' in them for
+    # activation checkpointing to automatically work correctly.
+    layers = model.to_layer_specs()
+    checkpointable_layers = set()
+    for layer in layers:
+        if isinstance(layer, LayerSpec) and 'decoderlayer' in layer.typename.__name__.lower():
+            checkpointable_layers.add(layer.typename.__name__)
+    checkpointable_layers = list(checkpointable_layers)
+    print(checkpointable_layers)
+
     if config['activation_checkpointing']:
         pipeline_model = PipelineModule(
-            layers=model.to_layer_specs(),
+            layers=layers,
             num_stages=config['pipeline_stages'],
             activation_checkpoint_interval=1,
-            checkpointable_layers=['LlamaDecoderLayerPipe'],
+            checkpointable_layers=checkpointable_layers,
             activation_checkpoint_func=deepspeed.checkpointing.checkpoint,
-            # TODO: switch back to 'parameters'. Probably want some custom code, it builds the LayerSpec
-            # just to find out the parameter count, which triggers loading and quantization unnecessarily.
-            partition_method='uniform'
+            partition_method='type:decoderlayer'
         )
     else:
         pipeline_model = PipelineModule(
-            layers=model.to_layer_specs(),
+            layers=layers,
             num_stages=config['pipeline_stages'],
-            # TODO: switch back to 'parameters'
-            partition_method='uniform'
+            partition_method='type:decoderlayer'
         )
 
     prepare_model_for_kbit_training(model, use_gradient_checkpointing=False)
@@ -226,7 +245,7 @@ def load_pipeline_model_with_lora(config):
     # convert them back to fp16/bf16 for flash-attn compatibility.
     for name, module in model.named_modules():
         dtype = DTYPE_MAP[config['bnb_compute_dtype']]
-        if "norm" in name:
+        if "norm" in name or "gate" in name:
             module.to(dtype)
         if "lm_head" in name or "embed_tokens" in name:
             if hasattr(module, "weight"):
