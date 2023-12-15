@@ -114,7 +114,10 @@ def save_lora(model_engine, pipeline_model, lora_config, save_dir):
         os.makedirs(tmp_dir, exist_ok=False)
     deepspeed.comm.barrier()
     if dp_id == 0:
-        partial_state_dict = {p.original_name.replace('.default', ''): p for p in pipeline_model.parameters() if p.requires_grad}
+        partial_state_dict = {
+            p.original_name.replace('.default', '').replace('.modules_to_save', ''): p
+            for p in pipeline_model.parameters() if p.requires_grad
+        }
         torch.save(partial_state_dict, os.path.join(tmp_dir, f'state_dict_{stage_id}.bin'))
     deepspeed.comm.barrier()
     if dp_id == 0 and stage_id == 0:
@@ -208,6 +211,7 @@ def load_pipeline_model_with_lora(config):
         r=config['lora_rank'],
         lora_alpha=config['lora_alpha'],
         target_modules=config['target_modules'],
+        modules_to_save=config['modules_to_save'] if 'modules_to_save' in config else [],
         lora_dropout=config['lora_dropout'],
         layers_to_transform=layers_to_transform,
         bias='none',
@@ -222,7 +226,6 @@ def load_pipeline_model_with_lora(config):
         if isinstance(layer, LayerSpec) and 'decoderlayer' in layer.typename.__name__.lower():
             checkpointable_layers.add(layer.typename.__name__)
     checkpointable_layers = list(checkpointable_layers)
-    print(checkpointable_layers)
 
     if config['activation_checkpointing']:
         pipeline_model = PipelineModule(
