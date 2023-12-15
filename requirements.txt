@@ -1,7 +1,7 @@
 accelerate==0.24.1
 bitsandbytes==0.41.2.post2
 datasets==2.14.6
-deepspeed==0.12.2
+deepspeed==0.12.4
 packaging==23.2
 peft==0.6.1
 safetensors==0.4.0
@@ -10,7 +10,7 @@ sentencepiece==0.1.99
 tensorboard==2.15.1
 toml==0.10.2
 jsonlines==4.0.0
-git+https://github.com/huggingface/transformers@f4db565b695582891e43a5e042e5d318e28f20b8
+transformers==4.36.1
 flash-attn==2.3.6
 
 # minimum Axolotl dependencies for what we use
