@@ -431,8 +431,7 @@ if __name__ == '__main__':
         # If we drop_last, we may lose up to batch_size*num_replicas data points. If we don't drop_last, we may have up
         # to an extra num_replicas data points as padding (and the last batch may be smaller). For a small dataset where
         # the batch_size doesn't affect any dynamics (since it's eval), the latter seems better.
-        # TODO: lol jk, multiple pipeline stages hangs during eval if this is False. Try to fix that eventually, I guess...
-        #drop_last=False
+        drop_last=False
     )
 
     tb_writer = SummaryWriter(log_dir=run_dir) if is_main_process() else None
