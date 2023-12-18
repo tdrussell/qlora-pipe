@@ -191,6 +191,7 @@ def load_pipeline_model_with_lora(config):
         'bnb_4bit_compute_dtype': DTYPE_MAP[config['bnb_compute_dtype']],
         'bnb_4bit_quant_type': 'nf4',
         'bnb_4bit_use_double_quant': config['use_double_quant'],
+        # TODO: make sure this doesn't match gate_proj in Llama.
         'llm_int8_skip_modules': ['lm_head', 'gate'],  # needed for mixtral
     }
     quantization_config = transformers.BitsAndBytesConfig(**quantization_config_params)
@@ -202,7 +203,11 @@ def load_pipeline_model_with_lora(config):
     if model_type == 'llama' or model_type == 'mistral':
         model = llama_pipe.LlamaForCausalLMPipe(config['model'], quantization_config=quantization_config)
     elif model_type == 'mixtral':
-        model = mixtral_pipe.MixtralForCausalLMPipe(config['model'], quantization_config=quantization_config)
+        model = mixtral_pipe.MixtralForCausalLMPipe(
+            config['model'],
+            quantization_config=quantization_config,
+            load_balancing_loss_coef=config['load_balancing_loss_coef'] if 'load_balancing_loss_coef' in config else None
+        )
     else:
         raise NotImplementedError()
 
@@ -315,7 +320,12 @@ if __name__ == '__main__':
     tokenizer.pad_token_id = 0
     tokenizer.padding_side = 'right'
 
-    train_data, eval_data = load_dataset(config['dataset_path'], config['dataset_type'], tokenizer, config['sequence_len'], config['eval_size'], ignore_cache=args.ignore_cache and is_main_process())
+    if 'eval_dataset_path' in config:
+        assert 'eval_size' not in config or config['eval_size'] == 0
+        train_data, _ = load_dataset(config['dataset_path'], config['dataset_type'], tokenizer, config['sequence_len'], 0, ignore_cache=args.ignore_cache)
+        eval_data, _ = load_dataset(config['eval_dataset_path'], config['dataset_type'], tokenizer, 4096, 0, ignore_cache=args.ignore_cache)
+    else:
+        train_data, eval_data = load_dataset(config['dataset_path'], config['dataset_type'], tokenizer, config['sequence_len'], config['eval_size'], ignore_cache=args.ignore_cache)
 
     # for testing
     # train_data = train_data.select(list(range(20)))

@@ -109,7 +109,7 @@ def load_axolotl_dataset(dataset_path, dataset_type, tokenizer, sequence_len, ev
 def load_dataset(dataset_path, dataset_type, tokenizer, sequence_len, eval_size, ignore_cache=False):
     if dataset_type in ['textfile', 'doclist']:
         with zero_first(is_main_process()):
-            train_data, eval_data = load_raw_dataset(dataset_path, tokenizer, sequence_len, eval_size, ignore_cache=ignore_cache)
+            train_data, eval_data = load_raw_dataset(dataset_path, tokenizer, sequence_len, eval_size, ignore_cache=ignore_cache and is_main_process())
         return train_data, eval_data
     else:
         return load_axolotl_dataset(dataset_path, dataset_type, tokenizer, sequence_len, eval_size)
