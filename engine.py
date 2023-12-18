@@ -96,6 +96,9 @@ class CustomPipelineEngine(PipelineEngine):
 
 
     def eval_batch(self, data_iter):
+        # sequence length may change between macro batches (but not between gradient accumulation steps)
+        self.reset_activation_shape()
+
         self.module.eval()
         self._compute_loss = True
 
