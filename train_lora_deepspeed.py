@@ -427,7 +427,12 @@ if __name__ == '__main__':
         model_engine.grid.get_data_parallel_world_size(),
         model_engine.grid.get_data_parallel_rank(),
         shuffle=False,
-        group_by_length=False if 'group_by_length' not in config else config['group_by_length']
+        group_by_length=False if 'group_by_length' not in config else config['group_by_length'],
+        # If we drop_last, we may lose up to batch_size*num_replicas data points. If we don't drop_last, we may have up
+        # to an extra num_replicas data points as padding (and the last batch may be smaller). For a small dataset where
+        # the batch_size doesn't affect any dynamics (since it's eval), the latter seems better.
+        # TODO: lol jk, multiple pipeline stages hangs during eval if this is False. Try to fix that eventually, I guess...
+        #drop_last=False
     )
 
     tb_writer = SummaryWriter(log_dir=run_dir) if is_main_process() else None

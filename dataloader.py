@@ -94,7 +94,7 @@ class DistributedBatchSamper(torch.utils.data.Sampler):
 # Therefore, anything that uses RepeatingLoader.epoch would break. Need to fix.
 class PipelineDataLoader:
     # A100 wants padding to multiple of 64, other cards are efficient with smaller, so just do 64
-    def __init__(self, dataset, tokenizer, batch_size, gradient_accumulation_steps, data_parallel_world_size, data_parallel_rank, shuffle=True, group_by_length=False, pad_to_multiple_of=64):
+    def __init__(self, dataset, tokenizer, batch_size, gradient_accumulation_steps, data_parallel_world_size, data_parallel_rank, shuffle=True, group_by_length=False, pad_to_multiple_of=64, drop_last=True):
         assert data_parallel_rank < data_parallel_world_size
         self.dataset = dataset
         self.tokenizer = tokenizer
@@ -108,7 +108,7 @@ class PipelineDataLoader:
             rank=data_parallel_rank,
             shuffle=shuffle,
             group_by_length=group_by_length,
-            drop_last=True
+            drop_last=drop_last
         )
         self.reset()
 
