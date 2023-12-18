@@ -323,7 +323,7 @@ if __name__ == '__main__':
     if 'eval_dataset_path' in config:
         assert 'eval_size' not in config or config['eval_size'] == 0
         train_data, _ = load_dataset(config['dataset_path'], config['dataset_type'], tokenizer, config['sequence_len'], 0, ignore_cache=args.ignore_cache)
-        eval_data, _ = load_dataset(config['eval_dataset_path'], config['dataset_type'], tokenizer, 4096, 0, ignore_cache=args.ignore_cache)
+        eval_data, _ = load_dataset(config['eval_dataset_path'], config['eval_dataset_type'], tokenizer, config['eval_sequence_len'], 0, ignore_cache=args.ignore_cache)
     else:
         train_data, eval_data = load_dataset(config['dataset_path'], config['dataset_type'], tokenizer, config['sequence_len'], config['eval_size'], ignore_cache=args.ignore_cache)
 
