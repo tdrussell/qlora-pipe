@@ -106,7 +106,7 @@ def evaluate(model_engine, eval_dataloader, tb_writer, step):
 
 # TODO: this is pretty hacky. Is there a way to get the state_dict from the lora model directly,
 # but still know which layers the given pipeline parallel stage actually trained?
-def save_lora(model_engine, pipeline_model, lora_config, save_dir):
+def save_lora(model_engine, pipeline_model, lora_config, save_dir, args):
     dp_id = model_engine.grid.get_data_parallel_rank()
     stage_id = model_engine.grid.get_pipe_parallel_rank()
     tmp_dir = os.path.join(save_dir, 'tmp')
@@ -126,6 +126,8 @@ def save_lora(model_engine, pipeline_model, lora_config, save_dir):
             state_dict.update(torch.load(path, map_location='cpu'))
         torch.save(state_dict, os.path.join(save_dir, 'adapter_model.bin'))
         lora_config.save_pretrained(save_dir)
+        shutil.copy(args.config, save_dir)
+        shutil.copy(args.deepspeed_config, save_dir)
         shutil.rmtree(tmp_dir)
 
 
@@ -422,7 +424,7 @@ if __name__ == '__main__':
     eval_dataloader = dataloader.PipelineDataLoader(
         eval_data,
         tokenizer,
-        model_engine.train_micro_batch_size_per_gpu(),
+        2,
         1,
         model_engine.grid.get_data_parallel_world_size(),
         model_engine.grid.get_data_parallel_rank(),
@@ -464,7 +466,7 @@ if __name__ == '__main__':
 
 
         if step % config['save_steps'] == 0:
-            save_lora(model_engine, pipeline_model, lora_config, f'{run_dir}/lora-{step}')
+            save_lora(model_engine, pipeline_model, lora_config, f'{run_dir}/lora-{step}', args)
 
         if step % config['eval_steps'] == 0:
             evaluate(model_engine, eval_dataloader, tb_writer, step)
@@ -483,4 +485,4 @@ if __name__ == '__main__':
         step += 1
 
     deepspeed.comm.barrier()
-    save_lora(model_engine, pipeline_model, lora_config, f'{run_dir}/lora-final')
+    save_lora(model_engine, pipeline_model, lora_config, f'{run_dir}/lora-final', args)
