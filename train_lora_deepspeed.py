@@ -449,6 +449,16 @@ if __name__ == '__main__':
         keys_scaled, avg_norm, max_norm, norms = apply_max_norm_regularization(pipeline_model, config)
 
         if train_dataloader.epoch != epoch:
+            model_engine.save_checkpoint(
+                run_dir,
+                client_state={
+                    'step': step,
+                    'custom_loader': train_dataloader.state_dict(),
+                },
+                save_latest=True,
+                exclude_frozen_parameters=True
+            )
+            save_lora(model_engine, pipeline_model, lora_config, f'{run_dir}/lora-epoch{epoch}', args)
             epoch = train_dataloader.epoch
             if epoch > config['epochs']:
                 break
@@ -484,6 +494,3 @@ if __name__ == '__main__':
             )
 
         step += 1
-
-    deepspeed.comm.barrier()
-    save_lora(model_engine, pipeline_model, lora_config, f'{run_dir}/lora-final', args)
