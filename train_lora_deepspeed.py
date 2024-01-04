@@ -322,12 +322,24 @@ if __name__ == '__main__':
     tokenizer.pad_token_id = 0
     tokenizer.padding_side = 'right'
 
+    dataset_cache_dir = None if 'dataset_cache_dir' not in config else config['dataset_cache_dir']
+    subsample = None if 'subsample_dataset' not in config else config['subsample_dataset']
     if 'eval_dataset_path' in config:
         assert 'eval_size' not in config or config['eval_size'] == 0
-        train_data, _ = load_dataset(config['dataset_path'], config['dataset_type'], tokenizer, config['sequence_len'], 0, ignore_cache=args.ignore_cache)
-        eval_data, _ = load_dataset(config['eval_dataset_path'], config['eval_dataset_type'], tokenizer, config['eval_sequence_len'], 0, ignore_cache=args.ignore_cache)
+        train_data, _ = load_dataset(config['dataset_path'], config['dataset_type'], tokenizer, config['sequence_len'], 0, cache_dir=dataset_cache_dir, ignore_cache=args.ignore_cache, subsample=subsample)
+        eval_dataset_cache_dir = None if 'eval_dataset_cache_dir' not in config else config['eval_dataset_cache_dir']
+        eval_data, _ = load_dataset(config['eval_dataset_path'], config['eval_dataset_type'], tokenizer, config['eval_sequence_len'], 0, cache_dir=eval_dataset_cache_dir, ignore_cache=args.ignore_cache)
     else:
-        train_data, eval_data = load_dataset(config['dataset_path'], config['dataset_type'], tokenizer, config['sequence_len'], config['eval_size'], ignore_cache=args.ignore_cache)
+        train_data, eval_data = load_dataset(
+            config['dataset_path'],
+            config['dataset_type'],
+            tokenizer,
+            config['sequence_len'],
+            config['eval_size'],
+            cache_dir=dataset_cache_dir,
+            ignore_cache=args.ignore_cache,
+            subsample=subsample
+        )
 
     # for testing
     # train_data = train_data.select(list(range(20)))
