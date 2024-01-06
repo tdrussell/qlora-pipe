@@ -79,6 +79,9 @@ def write_metrics(tb_writer, prefix, metrics, step):
     tb_writer.add_scalar(f'{prefix}/top5_accuracy', metrics[4].mean().item(), step)
     tb_writer.add_scalar(f'{prefix}/top20_accuracy', metrics[5].mean().item(), step)
 
+    if len(metrics) >= 7:
+        tb_writer.add_scalar(f'{prefix}/load_balancing_loss', metrics[6].mean().item(), step)
+
 
 def evaluate(model_engine, eval_dataloader, tb_writer, step):
     if is_main_process():

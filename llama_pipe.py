@@ -9,10 +9,10 @@ from pipeline_model import PipelineModel
 
 
 class EmbeddingPipe(nn.Module):
-    def __init__(self, loader_util, orig, use_flash_attention_2):
+    def __init__(self, loader_util, orig, attn_implementation):
         super().__init__()
         self.orig = orig
-        self.use_flash_attention_2 = use_flash_attention_2
+        self.attn_implementation = attn_implementation
         loader_util.load_state_dict_into_module(self)
 
     def forward(self, inputs):
@@ -20,7 +20,7 @@ class EmbeddingPipe(nn.Module):
         inputs_embeds = self.orig(input_ids)
         batch_size, seq_length = input_ids.shape
 
-        if self.use_flash_attention_2:
+        if self.attn_implementation == "flash_attention_2":
             # 2d mask is passed through the layers
             assert attention_mask is not None
             assert len(attention_mask.size()) == 2
@@ -134,7 +134,7 @@ class LlamaForCausalLMPipe(PipelineModel, transformers.LlamaForCausalLM):
 
         result = [
             initial_layer,
-            LayerSpec(EmbeddingPipe, self.loader_util, self.model.embed_tokens, self.model._use_flash_attention_2),
+            LayerSpec(EmbeddingPipe, self.loader_util, self.model.embed_tokens, self.model._attn_implementation),
         ]
         for block in self.model.layers:
             result.append(LayerSpec(LlamaDecoderLayerPipe, self.loader_util, block))
