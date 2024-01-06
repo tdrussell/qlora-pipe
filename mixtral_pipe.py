@@ -170,7 +170,7 @@ class MixtralForCausalLMPipe(PipelineModel, transformers.MixtralForCausalLM):
 
         result = [
             initial_layer,
-            LayerSpec(EmbeddingPipe, self.loader_util, self.model.embed_tokens, self.model._attn_implementation, self.model.config.sliding_window),
+            LayerSpec(EmbeddingPipe, self.loader_util, self.model.embed_tokens, self.model.config._attn_implementation, self.model.config.sliding_window),
         ]
         for block in self.model.layers:
             result.append(LayerSpec(MixtralDecoderLayerPipe, self.loader_util, block))

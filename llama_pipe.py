@@ -134,7 +134,7 @@ class LlamaForCausalLMPipe(PipelineModel, transformers.LlamaForCausalLM):
 
         result = [
             initial_layer,
-            LayerSpec(EmbeddingPipe, self.loader_util, self.model.embed_tokens, self.model._attn_implementation),
+            LayerSpec(EmbeddingPipe, self.loader_util, self.model.embed_tokens, self.model.config._attn_implementation),
         ]
         for block in self.model.layers:
             result.append(LayerSpec(LlamaDecoderLayerPipe, self.loader_util, block))
