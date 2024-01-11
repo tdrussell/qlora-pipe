@@ -11,7 +11,7 @@ import json
 import torch
 from torch.utils.tensorboard import SummaryWriter
 import transformers
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training, DimensionExpansionConfig
 import deepspeed
 from deepspeed.runtime.pipe.module import PipelineModule, LayerSpec
 import accelerate
@@ -169,8 +169,14 @@ def apply_max_norm_regularization(model, config):
         scalednorm = W.norm() * ratio
         norms.append(scalednorm.item())
 
-    norms = torch.tensor(norms, dtype=torch.float32)
-    return keys_scaled, sum(norms) / len(norms), max(norms), norms
+    if len(norms) > 0:
+        norms = torch.tensor(norms, dtype=torch.float32)
+        avg_norm = sum(norms) / len(norms)
+        max_norm = max(norms)
+    else:
+        avg_norm = 0
+        max_norm = 0
+    return keys_scaled, avg_norm, max_norm, norms
 
 
 def parse_layers_to_transform(spec):
@@ -191,15 +197,18 @@ def one_at_a_time():
 
 
 def load_pipeline_model_with_lora(config):
-    quantization_config_params = {
-        'load_in_4bit': True,
-        'bnb_4bit_compute_dtype': DTYPE_MAP[config['bnb_compute_dtype']],
-        'bnb_4bit_quant_type': 'nf4',
-        'bnb_4bit_use_double_quant': config['use_double_quant'],
-        # TODO: make sure this doesn't match gate_proj in Llama.
-        'llm_int8_skip_modules': ['lm_head', 'gate'],  # needed for mixtral
-    }
-    quantization_config = transformers.BitsAndBytesConfig(**quantization_config_params)
+    if 'load_in_4bit' in config and config['load_in_4bit']:
+        quantization_config_params = {
+            'load_in_4bit': True,
+            'bnb_4bit_compute_dtype': DTYPE_MAP[config['bnb_compute_dtype']],
+            'bnb_4bit_quant_type': 'nf4',
+            'bnb_4bit_use_double_quant': config['use_double_quant'],
+            # TODO: make sure this doesn't match gate_proj in Llama.
+            'llm_int8_skip_modules': ['lm_head', 'gate'],  # needed for mixtral
+        }
+        quantization_config = transformers.BitsAndBytesConfig(**quantization_config_params)
+    else:
+        quantization_config = None
 
     with open(os.path.join(config['model'], 'config.json')) as f:
         model_config = json.load(f)
@@ -215,18 +224,6 @@ def load_pipeline_model_with_lora(config):
         )
     else:
         raise NotImplementedError()
-
-    layers_to_transform = parse_layers_to_transform(config['layers_to_transform']) if 'layers_to_transform' in config else None
-    lora_config = LoraConfig(
-        r=config['lora_rank'],
-        lora_alpha=config['lora_alpha'],
-        target_modules=config['target_modules'],
-        modules_to_save=config['modules_to_save'] if 'modules_to_save' in config else [],
-        lora_dropout=config['lora_dropout'],
-        layers_to_transform=layers_to_transform,
-        bias='none',
-        task_type='CAUSAL_LM',
-    )
 
     # CAREFUL! The "primary" layers of the model have to have 'decoderlayer' in them for
     # activation checkpointing to automatically work correctly.
@@ -253,27 +250,40 @@ def load_pipeline_model_with_lora(config):
             partition_method='type:decoderlayer'
         )
 
-    prepare_model_for_kbit_training(model, use_gradient_checkpointing=False)
-    # LlamaRMSNorm layers are in fp32 after kbit_training, so we need to
-    # convert them back to fp16/bf16 for flash-attn compatibility.
-    for name, module in model.named_modules():
-        dtype = DTYPE_MAP[config['bnb_compute_dtype']]
-        if "norm" in name or "gate" in name:
-            module.to(dtype)
-        if "lm_head" in name or "embed_tokens" in name:
-            if hasattr(module, "weight"):
+    if quantization_config is not None:
+        prepare_model_for_kbit_training(model, use_gradient_checkpointing=False)
+        # LlamaRMSNorm layers are in fp32 after kbit_training, so we need to
+        # convert them back to fp16/bf16 for flash-attn compatibility.
+        for name, module in model.named_modules():
+            dtype = DTYPE_MAP[config['bnb_compute_dtype']]
+            if "norm" in name or "gate" in name:
                 module.to(dtype)
+            if "lm_head" in name or "embed_tokens" in name:
+                if hasattr(module, "weight"):
+                    module.to(dtype)
+
+    layers_to_transform = parse_layers_to_transform(config['layers_to_transform']) if 'layers_to_transform' in config else None
+    lora_config = LoraConfig(
+        r=config['lora_rank'],
+        lora_alpha=config['lora_alpha'],
+        target_modules=config['target_modules'],
+        modules_to_save=config['modules_to_save'] if 'modules_to_save' in config else [],
+        lora_dropout=config['lora_dropout'],
+        layers_to_transform=layers_to_transform,
+        bias='none',
+        task_type='CAUSAL_LM',
+    )
 
     # If we set the default dtype to bfloat16 at the very beginning, the loss blows up.
     # If we set it only here for the lora weights, everything is fine. ¯\_(ツ)_/¯
     torch.set_default_dtype(DTYPE_MAP[config['lora_weight_dtype']])
     lora_model = get_peft_model(model, lora_config)
     torch.set_default_dtype(torch.float32)
-    lora_model.config.use_cache = False
+    lora_model.model.config.use_cache = False
     for name, p in lora_model.named_parameters():
         p.original_name = name
 
-    return pipeline_model, lora_config
+    return pipeline_model, lora_model, lora_config
 
 
 last_checkpoint_time = None
@@ -359,7 +369,7 @@ if __name__ == '__main__':
         return bnb_cuda_old(self, device)
     bitsandbytes.nn.modules.Params4bit.cuda = bnb_cuda_hijack
 
-    pipeline_model, lora_config = load_pipeline_model_with_lora(config)
+    pipeline_model, lora_model, lora_config = load_pipeline_model_with_lora(config)
 
     parameters_to_train = [p for p in pipeline_model.parameters() if p.requires_grad]
 
@@ -485,10 +495,11 @@ if __name__ == '__main__':
             write_metrics(tb_writer, 'train', metrics, step)
             tb_writer.add_scalar('train/lr', optimizer.param_groups[0]['lr'], step)
             # TODO: gather the weight norms across all stages in the pipelined model, not just the first.
-            tb_writer.add_scalar('train/weights_scaled', keys_scaled, step)
-            tb_writer.add_scalar('train/avg_weight_norm', avg_norm, step)
-            tb_writer.add_scalar('train/max_weight_norm', max_norm, step)
-            tb_writer.add_histogram('train/weight_norm_hist', norms, step)
+            if len(norms) > 0:
+                tb_writer.add_scalar('train/weights_scaled', keys_scaled, step)
+                tb_writer.add_scalar('train/avg_weight_norm', avg_norm, step)
+                tb_writer.add_scalar('train/max_weight_norm', max_norm, step)
+                tb_writer.add_histogram('train/weight_norm_hist', norms, step)
 
 
         if step % config['save_steps'] == 0:

@@ -34,15 +34,16 @@ class PipelineModel(nn.Module):
     def __init__(self, model_path, quantization_config):
         self.loader_util = LoaderUtil(model_path)
 
-        modules_to_not_convert = get_keys_to_not_convert(self)
-        if not isinstance(modules_to_not_convert, list):
-            modules_to_not_convert = [modules_to_not_convert]
-        replace_with_bnb_linear(
-            self, modules_to_not_convert=modules_to_not_convert, quantization_config=quantization_config
-        )
-        # Make sure to set this or PEFT (and probably other things) will break in strange ways.
-        # We only need this because we do the loading and quanting ourselves.
-        self.is_loaded_in_4bit = True
+        if quantization_config is not None:
+            modules_to_not_convert = get_keys_to_not_convert(self)
+            if not isinstance(modules_to_not_convert, list):
+                modules_to_not_convert = [modules_to_not_convert]
+            replace_with_bnb_linear(
+                self, modules_to_not_convert=modules_to_not_convert, quantization_config=quantization_config
+            )
+            # Make sure to set this or PEFT (and probably other things) will break in strange ways.
+            # We only need this because we do the loading and quanting ourselves.
+            self.is_loaded_in_4bit = True
 
         for name, p in self.named_parameters():
             p.original_name = name
