@@ -17,6 +17,7 @@ from deepspeed.runtime.pipe.module import PipelineModule, LayerSpec
 import accelerate
 import toml
 import bitsandbytes
+from safetensors.torch import save_file
 
 from dataset_utils import load_dataset
 import dataloader
@@ -134,6 +135,55 @@ def save_lora(model_engine, pipeline_model, lora_config, save_dir, args):
         shutil.rmtree(tmp_dir)
 
 
+def save_full_model(model_engine, pipeline_model, save_dir, args, config, max_shard_size='5GB'):
+    dp_id = model_engine.grid.get_data_parallel_rank()
+    stage_id = model_engine.grid.get_pipe_parallel_rank()
+    tmp_dir = os.path.join(save_dir, 'tmp')
+    if dp_id == 0 and stage_id == 0:
+        os.makedirs(tmp_dir, exist_ok=False)
+    deepspeed.comm.barrier()
+    if dp_id == 0:
+        partial_state_dict = {p.original_name: p for p in pipeline_model.parameters()}
+        torch.save(partial_state_dict, os.path.join(tmp_dir, f'state_dict_{stage_id}.bin'))
+    deepspeed.comm.barrier()
+    if dp_id == 0 and stage_id == 0:
+        state_dict = {}
+        for path in glob.glob(os.path.join(tmp_dir, '*.bin')):
+            state_dict.update(torch.load(path, map_location='cpu'))
+        shards, index = transformers.modeling_utils.shard_checkpoint(state_dict, max_shard_size=max_shard_size, weights_name='model.safetensors')
+        for shard_file, shard in shards.items():
+            save_file(shard, os.path.join(save_dir, shard_file), metadata={"format": "pt"})
+        if index is not None:
+            save_index_file = 'model.safetensors.index.json'
+            save_index_file = os.path.join(save_dir, save_index_file)
+            # Save the index as well
+            with open(save_index_file, "w", encoding="utf-8") as f:
+                content = json.dumps(index, indent=2, sort_keys=True) + "\n"
+                f.write(content)
+        shutil.copy(args.config, save_dir)
+        shutil.copy(args.deepspeed_config, save_dir)
+        additional_files_to_copy = [
+            'added_tokens.json',
+            'config.json',
+            'generation_config.json',
+            'special_tokens_map.json',
+            'tokenizer.json',
+            'tokenizer_config.json',
+            'tokenizer.model',
+        ]
+        for path in glob.glob(os.path.join(config['model'], '*')):
+            if os.path.basename(path) in additional_files_to_copy:
+                shutil.copy(path, save_dir)
+        shutil.rmtree(tmp_dir)
+
+
+def save_model(model_engine, pipeline_model, lora_config, save_dir, args, config):
+    if lora_config is None:
+        save_full_model(model_engine, pipeline_model, save_dir, args, config)
+    else:
+        save_lora(model_engine, pipeline_model, lora_config, save_dir, args)
+
+
 def apply_max_norm_regularization(model, config):
     # modifed from https://github.com/kohya-ss/sd-scripts/blob/main/networks/lora.py
     A_keys = []
@@ -197,7 +247,9 @@ def one_at_a_time():
 
 
 def load_pipeline_model_with_lora(config):
+    full_fine_tune = 'full_fine_tune' in config and config['full_fine_tune']
     if 'load_in_4bit' in config and config['load_in_4bit']:
+        assert not full_fine_tune
         quantization_config_params = {
             'load_in_4bit': True,
             'bnb_4bit_compute_dtype': DTYPE_MAP[config['bnb_compute_dtype']],
@@ -262,26 +314,35 @@ def load_pipeline_model_with_lora(config):
                 if hasattr(module, "weight"):
                     module.to(dtype)
 
-    layers_to_transform = parse_layers_to_transform(config['layers_to_transform']) if 'layers_to_transform' in config else None
-    lora_config = LoraConfig(
-        r=config['lora_rank'],
-        lora_alpha=config['lora_alpha'],
-        target_modules=config['target_modules'],
-        modules_to_save=config['modules_to_save'] if 'modules_to_save' in config else [],
-        lora_dropout=config['lora_dropout'],
-        layers_to_transform=layers_to_transform,
-        bias='none',
-        task_type='CAUSAL_LM',
-    )
+    if full_fine_tune:
+        lora_model = None
+        lora_config = None
+        for name, p in model.named_parameters():
+            p.original_name = name
+        for name, p in pipeline_model.named_parameters():
+            if not any(target in name for target in config['target_modules']):
+                p.requires_grad = False
+    else:
+        layers_to_transform = parse_layers_to_transform(config['layers_to_transform']) if 'layers_to_transform' in config else None
+        lora_config = LoraConfig(
+            r=config['lora_rank'],
+            lora_alpha=config['lora_alpha'],
+            target_modules=config['target_modules'],
+            modules_to_save=config['modules_to_save'] if 'modules_to_save' in config else [],
+            lora_dropout=config['lora_dropout'],
+            layers_to_transform=layers_to_transform,
+            bias='none',
+            task_type='CAUSAL_LM',
+        )
 
-    # If we set the default dtype to bfloat16 at the very beginning, the loss blows up.
-    # If we set it only here for the lora weights, everything is fine. ¯\_(ツ)_/¯
-    torch.set_default_dtype(DTYPE_MAP[config['lora_weight_dtype']])
-    lora_model = get_peft_model(model, lora_config)
-    torch.set_default_dtype(torch.float32)
-    lora_model.model.config.use_cache = False
-    for name, p in lora_model.named_parameters():
-        p.original_name = name
+        # If we set the default dtype to bfloat16 at the very beginning, the loss blows up.
+        # If we set it only here for the lora weights, everything is fine. ¯\_(ツ)_/¯
+        torch.set_default_dtype(DTYPE_MAP[config['lora_weight_dtype']])
+        lora_model = get_peft_model(model, lora_config)
+        torch.set_default_dtype(torch.float32)
+        lora_model.model.config.use_cache = False
+        for name, p in lora_model.named_parameters():
+            p.original_name = name
 
     return pipeline_model, lora_model, lora_config
 
@@ -471,7 +532,8 @@ if __name__ == '__main__':
     while True:
         metrics = model_engine.train_batch()
         train_dataloader.sync_epoch()
-        keys_scaled, avg_norm, max_norm, norms = apply_max_norm_regularization(pipeline_model, config)
+        if lora_config is not None:
+            keys_scaled, avg_norm, max_norm, norms = apply_max_norm_regularization(pipeline_model, config)
 
         if train_dataloader.epoch != epoch:
             model_engine.save_checkpoint(
@@ -483,7 +545,7 @@ if __name__ == '__main__':
                 save_latest=True,
                 exclude_frozen_parameters=True
             )
-            save_lora(model_engine, pipeline_model, lora_config, f'{run_dir}/lora-epoch{epoch}', args)
+            save_model(model_engine, pipeline_model, lora_config, f'{run_dir}/epoch{epoch}', args, config)
             epoch = train_dataloader.epoch
             if epoch > config['epochs']:
                 break
@@ -495,7 +557,7 @@ if __name__ == '__main__':
             write_metrics(tb_writer, 'train', metrics, step)
             tb_writer.add_scalar('train/lr', optimizer.param_groups[0]['lr'], step)
             # TODO: gather the weight norms across all stages in the pipelined model, not just the first.
-            if len(norms) > 0:
+            if lora_config is not None and len(norms) > 0:
                 tb_writer.add_scalar('train/weights_scaled', keys_scaled, step)
                 tb_writer.add_scalar('train/avg_weight_norm', avg_norm, step)
                 tb_writer.add_scalar('train/max_weight_norm', max_norm, step)
@@ -503,7 +565,7 @@ if __name__ == '__main__':
 
 
         if step % config['save_steps'] == 0:
-            save_lora(model_engine, pipeline_model, lora_config, f'{run_dir}/lora-{step}', args)
+            save_model(model_engine, pipeline_model, lora_config, f'{run_dir}/step{step}', args, config)
 
         if step % config['eval_steps'] == 0:
             evaluate(model_engine, eval_dataloader, tb_writer, step)
