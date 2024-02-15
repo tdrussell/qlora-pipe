@@ -12,7 +12,7 @@ import gc
 import torch
 from torch.utils.tensorboard import SummaryWriter
 import transformers
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training, DimensionExpansionConfig
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 import deepspeed
 from deepspeed.runtime.pipe.module import PipelineModule, LayerSpec
 import accelerate
