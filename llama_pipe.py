@@ -142,3 +142,38 @@ class LlamaForCausalLMPipe(PipelineModel, transformers.LlamaForCausalLM):
         result.append(LayerSpec(LmHeadPipe, self.loader_util, self.lm_head))
         result.append(self.compute_metrics)
         return result
+
+
+class Qwen2ForCausalLMPipe(PipelineModel, transformers.Qwen2ForCausalLM):
+    def __init__(self, model_path, quantization_config):
+        config = transformers.Qwen2Config.from_pretrained(model_path)
+        config._attn_implementation = 'flash_attention_2'
+        # we can't be float32 when constructing the model or it complains because
+        # of flash attention
+        torch.set_default_dtype(torch.bfloat16)
+        with accelerate.init_empty_weights():
+            transformers.Qwen2ForCausalLM.__init__(self, config)
+        PipelineModel.__init__(self, model_path, quantization_config)
+        torch.set_default_dtype(torch.float32)
+
+    def to_layer_specs(self):
+        def initial_layer(inputs):
+            input_ids, attention_mask, labels = inputs
+            batch_size, seq_length = input_ids.shape[:2]
+            device = input_ids.device
+            position_ids = torch.arange(
+                0, seq_length, dtype=torch.long, device=device
+            )
+            position_ids = position_ids.unsqueeze(0)
+            return input_ids, attention_mask, position_ids, labels
+
+        result = [
+            initial_layer,
+            LayerSpec(EmbeddingPipe, self.loader_util, self.model.embed_tokens, self.model.config._attn_implementation),
+        ]
+        for block in self.model.layers:
+            result.append(LayerSpec(LlamaDecoderLayerPipe, self.loader_util, block))
+        result.append(LayerSpec(LlamaRMSNormPipe, self.loader_util, self.model.norm))
+        result.append(LayerSpec(LmHeadPipe, self.loader_util, self.lm_head))
+        result.append(self.compute_metrics)
+        return result

@@ -278,6 +278,8 @@ def load_pipeline_model_with_lora(config):
             quantization_config=quantization_config,
             load_balancing_loss_coef=config['load_balancing_loss_coef'] if 'load_balancing_loss_coef' in config else None
         )
+    elif model_type == 'qwen2':
+        model = llama_pipe.Qwen2ForCausalLMPipe(config['model'], quantization_config=quantization_config)
     else:
         raise NotImplementedError()
 
@@ -397,8 +399,7 @@ if __name__ == '__main__':
     run_dir = get_most_recent_run_dir(config['output_dir'])
 
     tokenizer = transformers.AutoTokenizer.from_pretrained(config['model'], local_files_only=True, use_fast=False, add_bos_token=True, add_eos_token=False)
-    tokenizer.pad_token_id = 0
-    tokenizer.padding_side = 'right'
+    tokenizer.pad_token = tokenizer.eos_token
 
     dataset_cache_dir = None if 'dataset_cache_dir' not in config else config['dataset_cache_dir']
     subsample = None if 'subsample_dataset' not in config else config['subsample_dataset']

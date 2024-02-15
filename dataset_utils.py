@@ -22,8 +22,7 @@ def yield_tokenized_sequences_from_dataset(tokenizer, dataset, sequence_len):
     example_tokens = []
     for item in tqdm(dataset):
         tokens = tokenizer.encode(item['text'])
-        assert tokens[0] == tokenizer.bos_token_id
-        assert tokens[-1] != tokenizer.eos_token_id
+        assert tokens[-1] != tokenizer.eos_token_id, tokens[-1]
         tokens.append(tokenizer.eos_token_id)
         while len(tokens) > 0:
             taken = tokens[:need]
