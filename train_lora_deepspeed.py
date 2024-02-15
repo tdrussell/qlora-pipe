@@ -7,6 +7,7 @@ import time
 import itertools
 from contextlib import contextmanager
 import json
+import gc
 
 import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -248,23 +249,26 @@ def one_at_a_time():
 
 def load_pipeline_model_with_lora(config):
     full_fine_tune = 'full_fine_tune' in config and config['full_fine_tune']
+    with open(os.path.join(config['model'], 'config.json')) as f:
+        model_config = json.load(f)
+        model_type = model_config['model_type'] if 'model_type' in model_config else 'llama'
+
     if 'load_in_4bit' in config and config['load_in_4bit']:
         assert not full_fine_tune
+        no_quant_modules = ['lm_head']
+        if model_type == 'mixtral':
+            # the expert routing weights are tiny and probably important, don't quantize
+            no_quant_modules.append('gate')
         quantization_config_params = {
             'load_in_4bit': True,
             'bnb_4bit_compute_dtype': DTYPE_MAP[config['bnb_compute_dtype']],
             'bnb_4bit_quant_type': 'nf4',
             'bnb_4bit_use_double_quant': config['use_double_quant'],
-            # TODO: make sure this doesn't match gate_proj in Llama.
-            'llm_int8_skip_modules': ['lm_head', 'gate'],  # needed for mixtral
+            'llm_int8_skip_modules': no_quant_modules
         }
         quantization_config = transformers.BitsAndBytesConfig(**quantization_config_params)
     else:
         quantization_config = None
-
-    with open(os.path.join(config['model'], 'config.json')) as f:
-        model_config = json.load(f)
-        model_type = model_config['model_type'] if 'model_type' in model_config else 'llama'
 
     if model_type == 'llama' or model_type == 'mistral':
         model = llama_pipe.LlamaForCausalLMPipe(config['model'], quantization_config=quantization_config)
@@ -293,13 +297,13 @@ def load_pipeline_model_with_lora(config):
             activation_checkpoint_interval=1,
             checkpointable_layers=checkpointable_layers,
             activation_checkpoint_func=deepspeed.checkpointing.checkpoint,
-            partition_method='type:decoderlayer'
+            partition_method='type:decoderlayer|embedding|lmhead'
         )
     else:
         pipeline_model = PipelineModule(
             layers=layers,
             num_stages=config['pipeline_stages'],
-            partition_method='type:decoderlayer'
+            partition_method='type:decoderlayer|embedding|lmhead'
         )
 
     if quantization_config is not None:
@@ -329,7 +333,7 @@ def load_pipeline_model_with_lora(config):
             lora_alpha=config['lora_alpha'],
             target_modules=config['target_modules'],
             modules_to_save=config['modules_to_save'] if 'modules_to_save' in config else [],
-            lora_dropout=config['lora_dropout'],
+            lora_dropout=config['lora_dropout'] if 'lora_dropout' in config else 0,
             layers_to_transform=layers_to_transform,
             bias='none',
             task_type='CAUSAL_LM',
@@ -529,6 +533,8 @@ if __name__ == '__main__':
     if config['eval_before_first_step'] and not config['resume_from_checkpoint']:
         evaluate(model_engine, eval_dataloader, tb_writer, 0)
 
+    gc.collect()
+    torch.cuda.empty_cache()
     while True:
         metrics = model_engine.train_batch()
         train_dataloader.sync_epoch()
