@@ -85,9 +85,11 @@ def write_metrics(tb_writer, prefix, metrics, step):
         tb_writer.add_scalar(f'{prefix}/load_balancing_loss', metrics[6].mean().item(), step)
 
 
-def evaluate(model_engine, eval_dataloader, tb_writer, step):
+def evaluate(model_engine, eval_dataloader, tb_writer, step, eval_gradient_accumulation_steps):
     if is_main_process():
         print('Running eval')
+    orig_micro_batches = model_engine.micro_batches
+    model_engine.micro_batches = eval_gradient_accumulation_steps
     iterator = iter(eval_dataloader)
     all_metrics = None
     start = time.time()
@@ -103,6 +105,7 @@ def evaluate(model_engine, eval_dataloader, tb_writer, step):
 
     duration = time.time() - start
     eval_dataloader.reset()
+    model_engine.micro_batches = orig_micro_batches
     eval_metrics = [torch.cat(metric_list) for metric_list in all_metrics]
     if is_main_process():
         write_metrics(tb_writer, 'eval', eval_metrics, step)
@@ -511,12 +514,14 @@ if __name__ == '__main__':
         for pg in optimizer.param_groups:
             pg['lr'] = config['force_constant_lr']
 
+    # this is a separate option, because if it's too high we might drop a significant fraction of the eval dataset
+    eval_gradient_accumulation_steps = config['eval_gradient_accumulation_steps'] if 'eval_gradient_accumulation_steps' in config else 1
     # Eval dataset doesn't need to repeat; we just use this to track "epoch" so we know when we're done iterating over it.
     eval_dataloader = dataloader.PipelineDataLoader(
         eval_data,
         tokenizer,
         model_engine.train_micro_batch_size_per_gpu(),
-        model_engine.gradient_accumulation_steps(),
+        eval_gradient_accumulation_steps,
         model_engine.grid.get_data_parallel_world_size(),
         model_engine.grid.get_data_parallel_rank(),
         shuffle=False,
@@ -532,7 +537,7 @@ if __name__ == '__main__':
 
     epoch = train_dataloader.epoch
     if config['eval_before_first_step'] and not config['resume_from_checkpoint']:
-        evaluate(model_engine, eval_dataloader, tb_writer, 0)
+        evaluate(model_engine, eval_dataloader, tb_writer, 0, eval_gradient_accumulation_steps)
 
     gc.collect()
     torch.cuda.empty_cache()
@@ -575,7 +580,7 @@ if __name__ == '__main__':
             save_model(model_engine, pipeline_model, lora_config, f'{run_dir}/step{step}', args, config)
 
         if step % config['eval_steps'] == 0:
-            evaluate(model_engine, eval_dataloader, tb_writer, step)
+            evaluate(model_engine, eval_dataloader, tb_writer, step, eval_gradient_accumulation_steps)
 
         if need_to_checkpoint():
             model_engine.save_checkpoint(
