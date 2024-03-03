@@ -118,7 +118,7 @@ def load_axolotl_dataset(dataset_path, dataset_type, tokenizer, sequence_len, ev
     cfg['batch_size'] = 1
     cfg['num_epochs'] = 1
     cfg = DictDefault(cfg)
-    train_data, eval_data, _ = prepare_dataset(cfg, tokenizer)
+    train_data, eval_data, *_ = prepare_dataset(cfg, tokenizer)
     return train_data, eval_data
 
 

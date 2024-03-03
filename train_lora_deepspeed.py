@@ -447,6 +447,7 @@ if __name__ == '__main__':
         model=pipeline_model,
         model_parameters=parameters_to_train,
     )
+    steps_per_epoch = len(train_data) // model_engine.train_batch_size()
 
     # TODO: the main DeepSpeedEngine forces all parameters to the GPU, and also does things like
     # broadcast all parameters from data parallel rank 0 to all other ranks. Thus, MLP offloading
@@ -474,7 +475,6 @@ if __name__ == '__main__':
     if 'lr_scheduler' not in config or config['lr_scheduler'] == 'none':
         lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1.0)
     elif config['lr_scheduler'] == 'cosine':
-        steps_per_epoch = len(train_data) // model_engine.train_batch_size()
         total_steps = steps_per_epoch * config['epochs']
         total_steps -= config['warmup_steps'] if 'warmup_steps' in config else 0
         # Normally, you would pass the lr_scheduler to deepspeed.initialize(). But we need the
@@ -563,7 +563,6 @@ if __name__ == '__main__':
                 break
             if is_main_process():
                 print(f'Started new epoch: {epoch}')
-                tb_writer.add_scalar('train/epoch', epoch, step)
 
         if is_main_process() and step % config['logging_steps'] == 0:
             write_metrics(tb_writer, 'train', metrics, step)
@@ -574,7 +573,7 @@ if __name__ == '__main__':
                 tb_writer.add_scalar('train/avg_weight_norm', avg_norm, step)
                 tb_writer.add_scalar('train/max_weight_norm', max_norm, step)
                 tb_writer.add_histogram('train/weight_norm_hist', norms, step)
-
+            tb_writer.add_scalar('train/epoch', step/steps_per_epoch, step)
 
         if step % config['save_steps'] == 0:
             save_model(model_engine, pipeline_model, lora_config, f'{run_dir}/step{step}', args, config)
