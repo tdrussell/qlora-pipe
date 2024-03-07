@@ -12,6 +12,7 @@ from axolotl.utils.dict import DictDefault
 from axolotl.utils.data import prepare_dataset
 import jsonlines
 from tqdm import tqdm
+import yaml
 
 from utils import *
 
@@ -109,11 +110,13 @@ def load_raw_dataset(dataset_path, tokenizer, sequence_len, eval_size, cache_dir
     return train_data, eval_data
 
 
-def load_axolotl_dataset(dataset_path, dataset_type, tokenizer, sequence_len, eval_size):
-    cfg = {}
-    cfg['datasets'] = [{'path': dataset_path, 'type': dataset_type}]
-    cfg['val_set_size'] = eval_size
-    cfg['sequence_len'] = sequence_len
+def load_axolotl_dataset(dataset_path, tokenizer, sequence_len, eval_size):
+    with open(dataset_path, 'r') as f:
+        cfg = yaml.safe_load(f.read())
+    if 'val_set_size' not in cfg and eval_size:
+        cfg['val_set_size'] = eval_size
+    if 'sequence_len' not in cfg and sequence_len:
+        cfg['sequence_len'] = sequence_len
     # these two don't matter, but they have to be set
     cfg['batch_size'] = 1
     cfg['num_epochs'] = 1
@@ -127,5 +130,7 @@ def load_dataset(dataset_path, dataset_type, tokenizer, sequence_len, eval_size,
         with zero_first(is_main_process()):
             train_data, eval_data = load_raw_dataset(dataset_path, tokenizer, sequence_len, eval_size, cache_dir=cache_dir, ignore_cache=ignore_cache, subsample=subsample)
         return train_data, eval_data
+    elif dataset_type == 'axolotl':
+        return load_axolotl_dataset(dataset_path, tokenizer, sequence_len, eval_size)
     else:
-        return load_axolotl_dataset(dataset_path, dataset_type, tokenizer, sequence_len, eval_size)
+        raise NotImplementedError()

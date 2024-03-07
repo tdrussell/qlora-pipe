@@ -12,6 +12,7 @@ toml
 jsonlines
 transformers
 flash-attn
+pyyaml
 
 # minimum Axolotl dependencies for what we use
 addict
