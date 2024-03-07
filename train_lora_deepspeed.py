@@ -34,6 +34,7 @@ parser.add_argument('--config', help='Path to TOML configuration file.')
 parser.add_argument('--ignore_cache', action='store_true')
 parser.add_argument('--local_rank', type=int, default=-1,
                     help='local rank passed from distributed launcher')
+parser.add_argument('--debug_dataset', type=int, help='print out this many training examples and then quit')
 parser = deepspeed.add_config_arguments(parser)
 args = parser.parse_args()
 
@@ -422,6 +423,20 @@ if __name__ == '__main__':
             ignore_cache=args.ignore_cache,
             subsample=subsample
         )
+
+    if args.debug_dataset:
+        if is_main_process():
+            for i, item in enumerate(iter(train_data)):
+                print('decoded input_ids:')
+                print(tokenizer.decode(item['input_ids']))
+                print('attention_mask:')
+                print(item['attention_mask'])
+                print('labels:')
+                print(item['labels'])
+                print('-'*80)
+                if i >= args.debug_dataset-1:
+                    break
+        quit()
 
     # for testing
     # train_data = train_data.select(list(range(20)))
