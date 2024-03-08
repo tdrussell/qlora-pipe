@@ -9,8 +9,10 @@ from torch.utils.data.distributed import DistributedSampler
 import transformers
 import accelerate
 from deepspeed import comm as dist
+from tqdm import tqdm
 
 from axolotl.utils.collators import DataCollatorForSeq2Seq
+from utils import *
 
 def split_batch(batch, pieces):
     example_tuple, labels = batch
@@ -42,7 +44,12 @@ class DistributedBatchSamper(torch.utils.data.Sampler):
 
     def __iter__(self):
         if self.group_by_length:
-            index_and_length = ((i, len(item['input_ids'])) for i, item in enumerate(self.dataset))
+            if is_main_process():
+                print('grouping dataset by length, this may take a while')
+                enumerator = tqdm(enumerate(self.dataset))
+            else:
+                enumerator = enumerate(self.dataset)
+            index_and_length = ((i, len(item['input_ids'])) for i, item in enumerator)
             indices = list(sorted(index_and_length, key=lambda t: t[1]))
         elif self.shuffle:
             # deterministically shuffle based on seed

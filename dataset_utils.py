@@ -122,6 +122,10 @@ def load_axolotl_dataset(dataset_path, tokenizer, sequence_len, eval_size):
     cfg['num_epochs'] = 1
     cfg = DictDefault(cfg)
     train_data, eval_data, *_ = prepare_dataset(cfg, tokenizer)
+    if is_main_process():
+        print(f'train_data size: {len(train_data)}')
+        if eval_data is not None:
+            print(f'eval_data size: {len(eval_data)}')
     return train_data, eval_data
 
 
