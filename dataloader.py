@@ -97,8 +97,6 @@ class DistributedBatchSamper(torch.utils.data.Sampler):
         return iter(indices)
 
 
-# TODO: with 3 GPUs in the pipeline, I think the middle GPU doesn't pull from the iterator.
-# Therefore, anything that uses RepeatingLoader.epoch would break. Need to fix.
 class PipelineDataLoader:
     # A100 wants padding to multiple of 64, other cards are efficient with smaller, so just do 64
     def __init__(self, dataset, tokenizer, batch_size, gradient_accumulation_steps, data_parallel_world_size, data_parallel_rank, shuffle=True, group_by_length=False, pad_to_multiple_of=64, drop_last=True):
