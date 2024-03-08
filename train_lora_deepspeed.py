@@ -483,7 +483,8 @@ if __name__ == '__main__':
         model_engine.gradient_accumulation_steps(),
         model_engine.grid.get_data_parallel_world_size(),
         model_engine.grid.get_data_parallel_rank(),
-        group_by_length=False if 'group_by_length' not in config else config['group_by_length']
+        group_by_length=False if 'group_by_length' not in config else config['group_by_length'],
+        batch_size_tokens=None if 'batch_size_tokens' not in config else config['batch_size_tokens'],
     )
     model_engine.set_dataloader(train_dataloader)
 
@@ -545,7 +546,8 @@ if __name__ == '__main__':
         # to an extra num_replicas data points as padding (and the last batch may be smaller). For a small dataset where
         # the batch_size doesn't affect any dynamics (since it's eval), the latter seems better.
         # TODO: drop_last=False still broken with pipelining, need to fix
-        drop_last=True
+        drop_last=True,
+        batch_size_tokens=None if 'batch_size_tokens' not in config else config['batch_size_tokens'],
     )
 
     tb_writer = SummaryWriter(log_dir=run_dir) if is_main_process() else None
