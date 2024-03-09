@@ -15,7 +15,6 @@ import transformers
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 import deepspeed
 from deepspeed.runtime.pipe.module import PipelineModule, LayerSpec
-import accelerate
 import toml
 import bitsandbytes
 from safetensors.torch import save_file
@@ -380,16 +379,6 @@ if __name__ == '__main__':
     with open(args.config) as f:
         config = toml.load(f)
 
-    # if config['flash_attention']:
-    #     from llama_attn_hijack_flash import replace_llama_attn_with_flash_attn
-    #     replace_llama_attn_with_flash_attn(packed=False)
-    # elif config['xformers_attention']:
-    #     from llama_attn_hijack_xformers import hijack_llama_attention
-    #     hijack_llama_attention()
-    # elif config['sdp_attention']:
-    #     from llama_attn_hijack_sdp import hijack_llama_sdp_attention
-    #     hijack_llama_sdp_attention()
-
     deepspeed.init_distributed()
 
     # if this is a new run, create a new dir for it
@@ -439,7 +428,7 @@ if __name__ == '__main__':
         quit()
 
     # for testing
-    # train_data = train_data.select(list(range(20)))
+    # train_data = train_data.select(list(range(5000)))
     # eval_data = eval_data.select(list(range(20)))
 
     # Ugly hack so we can move quantized models from GPU to CPU, and back to GPU again without triggering quantization a second time.
@@ -462,13 +451,12 @@ if __name__ == '__main__':
         model=pipeline_model,
         model_parameters=parameters_to_train,
     )
-    steps_per_epoch = len(train_data) // model_engine.train_batch_size()
 
     # TODO: the main DeepSpeedEngine forces all parameters to the GPU, and also does things like
     # broadcast all parameters from data parallel rank 0 to all other ranks. Thus, MLP offloading
     # must come after engine.initialize(). If we want to avoid loading everything onto GPUs only
     # to offload the MLPs, we have to rewrite a lot of code to work around things.
-    if config['offload_mlp_to_cpu']:
+    if 'offload_mlp_to_cpu' in config and config['offload_mlp_to_cpu']:
         assert config['activation_checkpointing']  # MLP offloading only works with activation checkpointing
         #pipeline_model.offload_mlp_to_cpu()
         for module in pipeline_model.modules():
@@ -488,6 +476,8 @@ if __name__ == '__main__':
     )
     model_engine.set_dataloader(train_dataloader)
 
+    steps_per_epoch = len(train_dataloader) // model_engine.gradient_accumulation_steps()
+
     if 'lr_scheduler' not in config or config['lr_scheduler'] == 'none':
         lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1.0)
     elif config['lr_scheduler'] == 'cosine':
@@ -506,23 +496,12 @@ if __name__ == '__main__':
 
     model_engine.lr_scheduler = lr_scheduler
 
-    # The MLP offloading only saves VRAM if we are also using activation checkpointing.
-    if config['offload_mlp_to_cpu'] and config['activation_checkpointing']:
-        # TODO: fix this. We changed the code to free everything except pipeline_model
-        #model.offload_mlp_to_cpu()
-        pass
-
     step = 1
     if config['resume_from_checkpoint']:
-        load_path, client_state = model_engine.load_checkpoint(run_dir, load_module_strict=False, load_lr_scheduler_states=config['load_lr_scheduler_states'])
+        load_path, client_state = model_engine.load_checkpoint(run_dir, load_module_strict=False, load_lr_scheduler_states=True)
         deepspeed.comm.barrier()  # just so the print below doesn't get swamped
         assert load_path is not None
-        # for some use cases, we may want to not resume the dataloader
-        if 'reset_dataloader' in config and config['reset_dataloader']:
-            if is_main_process():
-                print('skipping dataloader state_dict load')
-        else:
-            train_dataloader.load_state_dict(client_state['custom_loader'])
+        train_dataloader.load_state_dict(client_state['custom_loader'])
         step = client_state['step'] + 1
 
     if 'force_constant_lr' in config:

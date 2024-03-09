@@ -5,7 +5,6 @@ sys.path.insert(0, os.path.abspath('axolotl/src'))
 
 import torch
 from torch.utils.data import DataLoader
-from torch.utils.data.distributed import DistributedSampler
 import transformers
 import accelerate
 from deepspeed import comm as dist
@@ -46,7 +45,6 @@ class DistributedBatchSamper(torch.utils.data.Sampler):
         self.group_by_length = group_by_length
         self.seed = seed
 
-    def __iter__(self):
         if self.group_by_length:
             if is_main_process():
                 print('grouping dataset by length, this may take a while')
@@ -87,7 +85,6 @@ class DistributedBatchSamper(torch.utils.data.Sampler):
                 slice = indices[i:i+chunk_size]
                 batch_sequence_length = max(batch_sequence_length, int(math.ceil(slice[0][1] / 64)) * 64)
                 slice = [(idx, batch_sequence_length) for idx, _ in slice]
-                #slice_tokens = sum(t[1] for t in slice)
                 slice_tokens = batch_sequence_length * len(slice)
                 if len(current_batch) > 0 and current_size + slice_tokens > global_batch_size_tokens:
                     global_batches.append(current_batch)
@@ -121,8 +118,13 @@ class DistributedBatchSamper(torch.utils.data.Sampler):
         global_batches[0], global_batches[largest_global_batch] = global_batches[largest_global_batch], global_batches[0]
 
         batches_for_this_rank = [global_batch[self.rank:len(global_batch):self.num_replicas] for global_batch in global_batches]
-        indices = [[i for i, _ in batch] for batch in batches_for_this_rank]
-        return iter(indices)
+        self.indices = [[i for i, _ in batch] for batch in batches_for_this_rank]
+
+    def __iter__(self):
+        return iter(self.indices)
+
+    def __len__(self):
+        return len(self.indices)
 
 
 class PipelineDataLoader:
@@ -157,7 +159,7 @@ class PipelineDataLoader:
         return self
 
     def __len__(self):
-        return len(self.data_sampler) // self.batch_size
+        return len(self.data_sampler) * self.gradient_accumulation_steps
 
     def __next__(self):
         try:

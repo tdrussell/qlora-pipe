@@ -1,0 +1,17 @@
+{
+    "train_micro_batch_size_per_gpu": 1,
+    "gradient_accumulation_steps": 1,
+    "optimizer": {
+        "type": "AdamW",
+        "params": {
+            "lr": 5e-5,
+            "weight_decay": 0.1,
+            "betas": [
+                0.9,
+                0.99
+            ]
+        }
+    },
+    "gradient_clipping": 1.0,
+    "steps_per_print": 1
+}

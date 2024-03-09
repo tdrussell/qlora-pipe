@@ -13,6 +13,7 @@ jsonlines
 transformers
 flash-attn
 pyyaml
+tqdm
 
 # minimum Axolotl dependencies for what we use
 addict

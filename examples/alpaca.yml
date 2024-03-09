@@ -1,0 +1,3 @@
+datasets:
+  - path: vicgalle/alpaca-gpt4
+    type: alpaca
