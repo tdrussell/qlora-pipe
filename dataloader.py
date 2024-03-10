@@ -13,6 +13,10 @@ from tqdm import tqdm
 from axolotl.utils.collators import DataCollatorForSeq2Seq
 from utils import *
 
+# A100 wants padding to multiple of 64, other cards are efficient with smaller, so just do 64
+PAD_TO_MULTIPLE = 64
+
+
 def split_batch(batch, pieces):
     example_tuple, labels = batch
     if is_main_process():
@@ -83,7 +87,7 @@ class DistributedBatchSamper(torch.utils.data.Sampler):
             batch_sequence_length = 0
             for i in range(0, len(indices), chunk_size):
                 slice = indices[i:i+chunk_size]
-                batch_sequence_length = max(batch_sequence_length, int(math.ceil(slice[0][1] / 64)) * 64)
+                batch_sequence_length = max(batch_sequence_length, int(math.ceil(slice[0][1] / PAD_TO_MULTIPLE)) * PAD_TO_MULTIPLE)
                 slice = [(idx, batch_sequence_length) for idx, _ in slice]
                 slice_tokens = batch_sequence_length * len(slice)
                 if len(current_batch) > 0 and current_size + slice_tokens > global_batch_size_tokens:
@@ -128,8 +132,7 @@ class DistributedBatchSamper(torch.utils.data.Sampler):
 
 
 class PipelineDataLoader:
-    # A100 wants padding to multiple of 64, other cards are efficient with smaller, so just do 64
-    def __init__(self, dataset, tokenizer, batch_size, gradient_accumulation_steps, data_parallel_world_size, data_parallel_rank, shuffle=True, group_by_length=False, pad_to_multiple_of=64, drop_last=True, batch_size_tokens=None):
+    def __init__(self, dataset, tokenizer, batch_size, gradient_accumulation_steps, data_parallel_world_size, data_parallel_rank, shuffle=True, group_by_length=False, pad_to_multiple_of=PAD_TO_MULTIPLE, drop_last=True, batch_size_tokens=None):
         assert data_parallel_rank < data_parallel_world_size
         self.dataset = dataset
         self.tokenizer = tokenizer
