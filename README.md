@@ -67,9 +67,12 @@ NCCL_P2P_DISABLE="1" NCCL_IB_DISABLE="1" deepspeed --num_gpus=1 train.py --deeps
 ```
 RTX 4000 series needs those 2 enviroment variables set. Other GPUs may not need them.
 
-Set the --num_gpus flag to however many GPUs to want to use. The config option pipeline_stages determines the level of model parallelism. Then, the data parallelism is automatically set so that all GPUs are used.
+## Parallelism
+Deepspeed handles pipeline- and data-parallelism. Set the --num_gpus flag to however many GPUs to want to use. The config option pipeline_stages determines the level of model parallelism. Then, the data parallelism is automatically set so that all GPUs are used.
 
 For example with 4 GPUs, and pipeline_stages=2, there are two data-parallel instances of the model, each divided across 2 GPUs, with the first half of the layers on one GPU and the second half on the other.
+
+The option gradient_accumulation_steps in the Deepspeed JSON config file determines the amount of pipelining when using pipeline parallelism (pipeline_stages>1). The higher the value, the more the GPUs can overlap computation. For example, with gradient_accumulation_steps=1, there is a single batch that gets passed between the GPUs forward, then in reverse for the backward pass. Only 1 GPU is active at a time, the others are idle. As gradient_accumulation_steps increases, you start pipelining multiple forward/backward batches. At the beginning and end of the step, some GPUs will always be idle. So as gradient_accumulation_steps approaches infinity, you approach 100% theoretical utilization. In practice, a value of 8 or so already gives good average utilization with 2 GPUs. With more GPUs, you may want to go higher.
 
 ## Dataset configuration
 There are 3 options for specifying the dataset. Set the dataset_type field to one of:
