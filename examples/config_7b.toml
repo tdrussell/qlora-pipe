@@ -30,6 +30,9 @@ target_modules = ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj'
 # can specify layers to adapt with LoRA if you want
 #layers_to_transform = '16:31'
 
+# for Mixtral, set the load balancing coefficient
+#load_balancing_loss_coef = 0.02
+
 # Optimization configuration
 epochs = 2
 lr_scheduler = 'cosine'
@@ -69,4 +72,5 @@ activation_checkpointing = true
 
 # Resume a prior run
 # if true, we attempt to resume training from the most recent directory inside output_dir (the directory names are timestamps)
+# so, to resume, just run the exact same command but set this to true first
 resume_from_checkpoint = false
