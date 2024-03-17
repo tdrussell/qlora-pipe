@@ -478,7 +478,7 @@ if __name__ == '__main__':
 
     steps_per_epoch = len(train_dataloader) // model_engine.gradient_accumulation_steps()
 
-    if 'lr_scheduler' not in config or config['lr_scheduler'] == 'none':
+    if 'lr_scheduler' not in config or config['lr_scheduler'] == 'constant' or config['lr_scheduler'] == 'none':
         lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1.0)
     elif config['lr_scheduler'] == 'cosine':
         total_steps = steps_per_epoch * config['epochs']
