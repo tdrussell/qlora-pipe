@@ -26,7 +26,9 @@ load_in_4bit = true
 lora_rank = 64
 lora_alpha = 64
 lora_dropout = 0.05
-target_modules = ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj']
+target_modules = 'all-linear'
+# Or, adapt just specific modules:
+#target_modules = ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj']
 # can specify layers to adapt with LoRA if you want
 #layers_to_transform = '16:31'
 
