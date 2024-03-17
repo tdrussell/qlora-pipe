@@ -49,22 +49,20 @@ class DistributedBatchSamper(torch.utils.data.Sampler):
         self.group_by_length = group_by_length
         self.seed = seed
 
+        if is_main_process():
+            print('loading dataset, this may take a while')
+            enumerator = tqdm(enumerate(self.dataset))
+        else:
+            enumerator = enumerate(self.dataset)
+        indices = [(i, len(item['input_ids'])) for i, item in enumerator]
         if self.group_by_length:
-            if is_main_process():
-                print('grouping dataset by length, this may take a while')
-                enumerator = tqdm(enumerate(self.dataset))
-            else:
-                enumerator = enumerate(self.dataset)
-            index_and_length = ((i, len(item['input_ids'])) for i, item in enumerator)
-            indices = list(sorted(index_and_length, key=lambda t: t[1], reverse=True))
+            indices.sort(key=lambda t: t[1], reverse=True)
         elif self.shuffle:
             # deterministically shuffle based on seed
             g = torch.Generator()
             g.manual_seed(self.seed)
             shuffle_idx = torch.randperm(len(self.dataset), generator=g).tolist()
-            indices = [(i, len(self.dataset[i]['input_ids'])) for i in shuffle_idx]
-        else:
-            indices = [(i, len(item['input_ids'])) for i, item in enumerate(self.dataset)]
+            indices = [indices[i] for i in shuffle_idx]
 
         if not self.drop_last:
             # add extra samples to make it evenly divisible
