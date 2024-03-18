@@ -295,6 +295,7 @@ def load_pipeline_model_with_lora(config):
             checkpointable_layers.add(layer.typename.__name__)
     checkpointable_layers = list(checkpointable_layers)
 
+    partition_method = 'uniform' if full_fine_tune else 'type:decoderlayer|embedding|lmhead'
     if config['activation_checkpointing']:
         pipeline_model = PipelineModule(
             layers=layers,
@@ -302,13 +303,13 @@ def load_pipeline_model_with_lora(config):
             activation_checkpoint_interval=1,
             checkpointable_layers=checkpointable_layers,
             activation_checkpoint_func=deepspeed.checkpointing.checkpoint,
-            partition_method='type:decoderlayer|embedding|lmhead'
+            partition_method=partition_method
         )
     else:
         pipeline_model = PipelineModule(
             layers=layers,
             num_stages=config['pipeline_stages'],
-            partition_method='type:decoderlayer|embedding|lmhead'
+            partition_method=partition_method
         )
 
     if quantization_config is not None:
@@ -328,9 +329,10 @@ def load_pipeline_model_with_lora(config):
         lora_config = None
         for name, p in model.named_parameters():
             p.original_name = name
-        for name, p in pipeline_model.named_parameters():
-            if not any(target in name for target in config['target_modules']):
-                p.requires_grad = False
+        if 'target_modules' in config and config['target_modules'] != 'all-linear':
+            for name, p in pipeline_model.named_parameters():
+                if not any(target in name for target in config['target_modules']):
+                    p.requires_grad = False
     else:
         layers_to_transform = parse_layers_to_transform(config['layers_to_transform']) if 'layers_to_transform' in config else None
         lora_config = LoraConfig(
