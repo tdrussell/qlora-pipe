@@ -26,9 +26,13 @@ load_in_4bit = true
 lora_rank = 64
 lora_alpha = 64
 lora_dropout = 0.05
-target_modules = 'all-linear'
-# Or, adapt just specific modules:
+
+# Train only specific modules. This is passed to the parameter of the same name in the LoraConfig.
+# If not set, adapt all linear modules.
+# Note, this ALSO affects full fine tuning. In that case, if this is set, only weights containing one
+# of these keys as substring will have requires_grad.
 #target_modules = ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj']
+
 # can specify layers to adapt with LoRA if you want
 #layers_to_transform = '16:31'
 

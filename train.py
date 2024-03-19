@@ -324,21 +324,23 @@ def load_pipeline_model_with_lora(config):
                 if hasattr(module, "weight"):
                     module.to(dtype)
 
+    target_modules = config['target_modules'] if 'target_modules' in config else 'all-linear'
     if full_fine_tune:
         lora_model = None
         lora_config = None
         for name, p in model.named_parameters():
             p.original_name = name
-        if 'target_modules' in config and config['target_modules'] != 'all-linear':
+        if isinstance(target_modules, list):
             for name, p in pipeline_model.named_parameters():
                 if not any(target in name for target in config['target_modules']):
                     p.requires_grad = False
+                    print(f'not training {name} because it is not present in target_modules')
     else:
         layers_to_transform = parse_layers_to_transform(config['layers_to_transform']) if 'layers_to_transform' in config else None
         lora_config = LoraConfig(
             r=config['lora_rank'],
             lora_alpha=config['lora_alpha'],
-            target_modules=config['target_modules'],
+            target_modules=target_modules,
             modules_to_save=config['modules_to_save'] if 'modules_to_save' in config else [],
             lora_dropout=config['lora_dropout'] if 'lora_dropout' in config else 0,
             layers_to_transform=layers_to_transform,
@@ -430,8 +432,8 @@ if __name__ == '__main__':
         quit()
 
     # for testing
-    # train_data = train_data.select(list(range(5000)))
-    # eval_data = eval_data.select(list(range(20)))
+    # train_data = train_data.select(list(range(100)))
+    # eval_data = eval_data.select(list(range(50)))
 
     # Ugly hack so we can move quantized models from GPU to CPU, and back to GPU again without triggering quantization a second time.
     bnb_cuda_old = bitsandbytes.nn.modules.Params4bit.cuda
