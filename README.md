@@ -2,9 +2,9 @@
 A pipeline parallel training script for LLMs.
 
 ## About
-This is a training script I made so that I can fine-tune LLMs using my workstation with four 4090s. It is developed first and foremost for me, myself, and I. It is scrappy and hacked together. It will likely *never* be a stable, well-supported training script like Axolotl. I am open sourcing the code in case it is useful to others, and also as a proof-of-concept that this kind of thing is possible.
+This is a training script I made so that I can fine-tune LLMs using my workstation with four 4090s. It is developed first and foremost for myself, with my own use cases in mind. It is scrappy and hacked together. It will likely *never* be a stable, well-supported training script like Axolotl. I am open sourcing the code in case it is useful to others, and also as a proof-of-concept that this kind of thing is possible.
 
-That being said, if something doesn't work right, or you would like it to support some feature, feel free to raise an issue and I'll try look at it.
+That being said, if something doesn't work right, or you would like it to support some feature, feel free to raise an issue and I'll try to look at it.
 
 ## Features
 - Pipeline parallel training, for efficiently training large models that cannot fit on one GPU
