@@ -110,7 +110,7 @@ class LlamaDecoderLayerPipe(nn.Module):
 # positional argument. We inherit PipelineModel first, but call LlamaForCausalLM init first,
 # and make sure PipelineModel doesn't have a super().__init__() call.
 class LlamaForCausalLMPipe(PipelineModel, transformers.LlamaForCausalLM):
-    def __init__(self, model_path, quantization_config):
+    def __init__(self, model_path, quantization_config, **kwargs):
         config = transformers.LlamaConfig.from_pretrained(model_path)
         config._attn_implementation = 'flash_attention_2'
         # we can't be float32 when constructing the model or it complains because
@@ -118,7 +118,7 @@ class LlamaForCausalLMPipe(PipelineModel, transformers.LlamaForCausalLM):
         torch.set_default_dtype(torch.bfloat16)
         with accelerate.init_empty_weights():
             transformers.LlamaForCausalLM.__init__(self, config)
-        PipelineModel.__init__(self, model_path, quantization_config)
+        PipelineModel.__init__(self, model_path, quantization_config, **kwargs)
         torch.set_default_dtype(torch.float32)
 
     def to_layer_specs(self):
@@ -145,7 +145,7 @@ class LlamaForCausalLMPipe(PipelineModel, transformers.LlamaForCausalLM):
 
 
 class Qwen2ForCausalLMPipe(PipelineModel, transformers.Qwen2ForCausalLM):
-    def __init__(self, model_path, quantization_config):
+    def __init__(self, model_path, quantization_config, **kwargs):
         config = transformers.Qwen2Config.from_pretrained(model_path)
         config._attn_implementation = 'flash_attention_2'
         # we can't be float32 when constructing the model or it complains because
@@ -153,7 +153,7 @@ class Qwen2ForCausalLMPipe(PipelineModel, transformers.Qwen2ForCausalLM):
         torch.set_default_dtype(torch.bfloat16)
         with accelerate.init_empty_weights():
             transformers.Qwen2ForCausalLM.__init__(self, config)
-        PipelineModel.__init__(self, model_path, quantization_config)
+        PipelineModel.__init__(self, model_path, quantization_config, **kwargs)
         torch.set_default_dtype(torch.float32)
 
     def to_layer_specs(self):

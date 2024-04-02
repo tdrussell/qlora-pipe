@@ -65,6 +65,7 @@ def write_metrics(tb_writer, prefix, metrics, step):
     for quantile, value in zip(quantiles, loss_quantiles):
         tb_writer.add_scalar(f'{prefix}/loss_quantile_{quantile:.3f}', value, step)
     tb_writer.add_scalar(f'{prefix}/loss', losses.mean().item(), step)
+    tb_writer.add_scalar(f'{prefix}/optimized_loss', metrics[0].mean().item(), step)
     tb_writer.add_histogram(f'{prefix}/log_loss_hist', torch.log(1e-10 + losses), step)
 
     entropy = metrics[2].view(-1)
@@ -273,16 +274,20 @@ def load_pipeline_model_with_lora(config):
     else:
         quantization_config = None
 
+    focal_loss_gamma = 0 if 'focal_loss_gamma' not in config else config['focal_loss_gamma']
+    if focal_loss_gamma > 0 and is_main_process():
+        print(f'Using focal loss with gamma={focal_loss_gamma}')
     if model_type == 'llama' or model_type == 'mistral':
-        model = llama_pipe.LlamaForCausalLMPipe(config['model'], quantization_config=quantization_config)
+        model = llama_pipe.LlamaForCausalLMPipe(config['model'], quantization_config=quantization_config, focal_loss_gamma=focal_loss_gamma)
     elif model_type == 'mixtral':
         model = mixtral_pipe.MixtralForCausalLMPipe(
             config['model'],
             quantization_config=quantization_config,
-            load_balancing_loss_coef=config['load_balancing_loss_coef'] if 'load_balancing_loss_coef' in config else None
+            load_balancing_loss_coef=config['load_balancing_loss_coef'] if 'load_balancing_loss_coef' in config else None,
+            focal_loss_gamma=focal_loss_gamma
         )
     elif model_type == 'qwen2':
-        model = llama_pipe.Qwen2ForCausalLMPipe(config['model'], quantization_config=quantization_config)
+        model = llama_pipe.Qwen2ForCausalLMPipe(config['model'], quantization_config=quantization_config, focal_loss_gamma=focal_loss_gamma)
     else:
         raise NotImplementedError()
 

@@ -133,7 +133,7 @@ class LmHeadPipe(nn.Module):
 
 
 class MixtralForCausalLMPipe(PipelineModel, transformers.MixtralForCausalLM):
-    def __init__(self, model_path, quantization_config, load_balancing_loss_coef=None):
+    def __init__(self, model_path, quantization_config, load_balancing_loss_coef=None, **kwargs):
         config = transformers.MixtralConfig.from_pretrained(model_path)
         config._attn_implementation = 'flash_attention_2'
         # we can't be float32 when constructing the model or it complains because
@@ -141,7 +141,7 @@ class MixtralForCausalLMPipe(PipelineModel, transformers.MixtralForCausalLM):
         torch.set_default_dtype(torch.bfloat16)
         with accelerate.init_empty_weights():
             transformers.MixtralForCausalLM.__init__(self, config)
-        PipelineModel.__init__(self, model_path, quantization_config)
+        PipelineModel.__init__(self, model_path, quantization_config, **kwargs)
         torch.set_default_dtype(torch.float32)
         self.load_balancing_loss_coef = load_balancing_loss_coef
 

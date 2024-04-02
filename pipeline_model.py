@@ -31,8 +31,9 @@ def top_k_accuracy(logits, labels, k_list, ignore_index=-100):
 
 class PipelineModel(nn.Module):
 
-    def __init__(self, model_path, quantization_config):
+    def __init__(self, model_path, quantization_config, focal_loss_gamma=0):
         self.loader_util = LoaderUtil(model_path)
+        self.focal_loss_gamma = focal_loss_gamma
 
         if quantization_config is not None:
             modules_to_not_convert = get_keys_to_not_convert(self)
@@ -64,10 +65,17 @@ class PipelineModel(nn.Module):
         # if we mask the labels, those loss values will be 0
         valid_loss = (loss_unreduced != 0)
         loss_unreduced = loss_unreduced[valid_loss]
+        optimized_loss_unreduced = loss_unreduced
+
+        # focal loss
+        if (self.focal_loss_gamma > 0):
+            p = torch.exp(-optimized_loss_unreduced)
+            optimized_loss_unreduced = (1-p)**self.focal_loss_gamma * optimized_loss_unreduced
+
         with torch.no_grad():
             accuracies = top_k_accuracy(shift_logits, shift_labels, k_list=[1, 5, 20])
             entropy = entropy_fn(shift_logits)[valid_loss]
-        loss = loss_unreduced.mean()
+        loss = optimized_loss_unreduced.mean()
         loss_unreduced = loss_unreduced.detach()
         return loss, loss_unreduced, entropy, *accuracies
 
