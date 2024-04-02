@@ -30,7 +30,6 @@ DTYPE_MAP = {'float32': torch.float32, 'float16': torch.float16, 'bfloat16': tor
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--config', help='Path to TOML configuration file.')
-parser.add_argument('--ignore_cache', action='store_true')
 parser.add_argument('--local_rank', type=int, default=-1,
                     help='local rank passed from distributed launcher')
 parser.add_argument('--debug_dataset', type=int, help='print out this many training examples and then quit')
@@ -407,9 +406,9 @@ if __name__ == '__main__':
     subsample = None if 'subsample_dataset' not in config else config['subsample_dataset']
     if 'eval_dataset_path' in config:
         assert 'eval_size' not in config or config['eval_size'] == 0
-        train_data, _ = load_dataset(config['dataset_path'], config['dataset_type'], tokenizer, config['sequence_len'], 0, cache_dir=dataset_cache_dir, ignore_cache=args.ignore_cache, subsample=subsample)
+        train_data, _ = load_dataset(config['dataset_path'], config['dataset_type'], tokenizer, config['sequence_len'], 0, subsample=subsample)
         eval_dataset_cache_dir = None if 'eval_dataset_cache_dir' not in config else config['eval_dataset_cache_dir']
-        eval_data, _ = load_dataset(config['eval_dataset_path'], config['eval_dataset_type'], tokenizer, config['eval_sequence_len'], 0, cache_dir=eval_dataset_cache_dir, ignore_cache=args.ignore_cache)
+        eval_data, _ = load_dataset(config['eval_dataset_path'], config['eval_dataset_type'], tokenizer, config['eval_sequence_len'], 0)
     else:
         train_data, eval_data = load_dataset(
             config['dataset_path'],
@@ -417,8 +416,6 @@ if __name__ == '__main__':
             tokenizer,
             config['sequence_len'],
             config['eval_size'],
-            cache_dir=dataset_cache_dir,
-            ignore_cache=args.ignore_cache,
             subsample=subsample
         )
 

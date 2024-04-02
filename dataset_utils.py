@@ -1,5 +1,4 @@
 import os.path
-import json
 import sys
 import glob
 import random
@@ -7,22 +6,19 @@ import random
 sys.path.insert(0, os.path.abspath('axolotl/src'))
 
 import torch
-from datasets import Dataset
+import datasets
 from axolotl.utils.dict import DictDefault
 from axolotl.utils.data import prepare_dataset
-import jsonlines
 from tqdm import tqdm
 import yaml
 
 from utils import *
 
 
-# dataset: list of dict with 'text' key
-def yield_tokenized_sequences_from_dataset(tokenizer, dataset, sequence_len):
+def yield_sequences_from_token_batch(tokenizer, token_batch, sequence_len):
     need = sequence_len
     example_tokens = []
-    for item in tqdm(dataset):
-        tokens = tokenizer.encode(item['text'])
+    for tokens in tqdm(token_batch):
         assert tokens[-1] != tokenizer.eos_token_id, tokens[-1]
         tokens.append(tokenizer.eos_token_id)
         while len(tokens) > 0:
@@ -41,72 +37,36 @@ def yield_tokenized_sequences_from_dataset(tokenizer, dataset, sequence_len):
     #     yield example_tokens
 
 
-def get_examples_from_dataset(tokenizer, dataset, sequence_len):
+def slice_into_chunks(x, sequence_len, overlap=0):
     result = []
-    for tokens in yield_tokenized_sequences_from_dataset(tokenizer, dataset, sequence_len):
-        input_ids = torch.tensor(tokens)
-        result.append({'input_ids': input_ids, 'attention_mask': torch.ones_like(input_ids), 'labels': input_ids})
+    step = sequence_len - overlap
+    for i in range(0, len(x), step):
+        result.append(x[i:i+sequence_len])
     return result
 
 
-def load_dataset_into_dict(path):
-    if path.endswith('.json'):
-        with open(path) as f:
-            return json.load(f)
-    if path.endswith('.jsonl'):
-        with jsonlines.open(path) as reader:
-            return list(reader)
-    elif path.endswith('.txt'):
-        with open(path) as f:
-            text = f.read()
-        return [{'text': text}]
+def load_raw_dataset(dataset_path, tokenizer, sequence_len, eval_size, overlap=0, subsample=None):
+    if dataset_path.endswith('.txt'):
+        dataset = datasets.load_dataset('text', data_files=dataset_path, sample_by='document')['train']
+    elif dataset_path.endswith('.json') or dataset_path.endswith('.jsonl'):
+        dataset = datasets.load_dataset('json', data_files=dataset_path)['train']
     else:
         raise NotImplementedError()
 
-
-def load_dataset_pattern_into_dict(pattern, subsample=None):
-    result = []
-    paths = glob.glob(pattern)
-    if subsample is not None:
-        k = int(len(paths) * subsample)
-        print(f'Subsampling dataset to {k} entries')
-        paths = random.sample(paths, k)
-    for path in paths:
-        result.extend(load_dataset_into_dict(path))
-    return result
-
-
-def load_raw_dataset(dataset_path, tokenizer, sequence_len, eval_size, cache_dir=None, ignore_cache=False, subsample=None):
-    if cache_dir is not None:
-        train_path = os.path.join(cache_dir, 'train')
-        eval_path = os.path.join(cache_dir, 'eval')
-    train_data = None
-    eval_data = None
-    try:
-        if cache_dir is not None and not ignore_cache:
-            train_data = Dataset.load_from_disk(train_path)
-            eval_data = Dataset.load_from_disk(eval_path)
-    except:
-        pass
-    if train_data is None and eval_data is None:
-        dataset = load_dataset_pattern_into_dict(dataset_path, subsample=subsample)
-
-        train_data = Dataset.from_list(get_examples_from_dataset(tokenizer, dataset, sequence_len))
-        if eval_size > 0:
-            split_datasets = train_data.train_test_split(test_size=eval_size, shuffle=True, seed=42)
-            train_data = split_datasets['train']
-            eval_data = split_datasets['test']
-            if cache_dir is not None:
-                train_data.save_to_disk(train_path)
-                eval_data.save_to_disk(eval_path)
-        else:
-            train_data = train_data.shuffle(seed=42)
-            if cache_dir is not None:
-                train_data.save_to_disk(train_path)
-
-    print(f'train_data size: {len(train_data)}')
-    if eval_data is not None:
-        print(f'eval_data size: {len(eval_data)}')
+    if subsample:
+        dataset = dataset.shuffle(seed=13).select(list(range(int(subsample*len(dataset)))))
+    dataset = dataset.map(lambda x: {'input_ids': tokenizer.encode(x['text'], return_tensors='pt').view(-1)}, remove_columns=dataset.column_names)
+    # TODO: maybe do it this way instead
+    #dataset = dataset.map(lambda x: {'tokens': slice_into_chunks(x['tokens'][0], sequence_len, overlap=overlap)}, batched=True, batch_size=1)
+    dataset = dataset.map(lambda x: {'input_ids': list(yield_sequences_from_token_batch(tokenizer, x['input_ids'], sequence_len))}, batched=True)
+    dataset = dataset.map(lambda x: {'attention_mask': torch.ones_like(torch.tensor(x['input_ids'])), 'labels': x['input_ids']})
+    if eval_size > 0:
+        split_datasets = dataset.train_test_split(test_size=eval_size, shuffle=True, seed=42)
+        train_data = split_datasets['train']
+        eval_data = split_datasets['test']
+    else:
+        train_data = dataset.shuffle(seed=42)
+        eval_data = None
     return train_data, eval_data
 
 
@@ -129,12 +89,27 @@ def load_axolotl_dataset(dataset_path, tokenizer, sequence_len, eval_size):
     return train_data, eval_data
 
 
-def load_dataset(dataset_path, dataset_type, tokenizer, sequence_len, eval_size, cache_dir=None, ignore_cache=False, subsample=None):
+def load_dataset(dataset_path, dataset_type, tokenizer, sequence_len, eval_size, subsample=None):
     if dataset_type in ['textfile', 'doclist']:
         with zero_first(is_main_process()):
-            train_data, eval_data = load_raw_dataset(dataset_path, tokenizer, sequence_len, eval_size, cache_dir=cache_dir, ignore_cache=ignore_cache, subsample=subsample)
+            train_data, eval_data = load_raw_dataset(dataset_path, tokenizer, sequence_len, eval_size, subsample=subsample)
         return train_data, eval_data
     elif dataset_type == 'axolotl':
         return load_axolotl_dataset(dataset_path, tokenizer, sequence_len, eval_size)
     else:
         raise NotImplementedError()
+
+
+# for testing
+if __name__ == '__main__':
+    import transformers
+    # from datasets import disable_caching
+    # disable_caching()
+
+    tokenizer = transformers.AutoTokenizer.from_pretrained(sys.argv[1], local_files_only=True, use_fast=False, legacy=True)
+    tokenizer.pad_token_id = 0
+    tokenizer.padding_side = 'right'
+    train_data1, eval_data1 = load_raw_dataset('/home/anon/data/test/txt/*.txt', tokenizer, 100, 0.5)
+    train_data2, eval_data2 = load_raw_dataset('/home/anon/data/test/json/*.jsonl', tokenizer, 100, 0.5)
+    print(len(train_data1))
+    print(len(train_data2))
