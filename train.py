@@ -539,9 +539,9 @@ if __name__ == '__main__':
     if config['eval_before_first_step'] and not config['resume_from_checkpoint']:
         evaluate(model_engine, eval_dataloader, tb_writer, 0, eval_gradient_accumulation_steps)
 
-    gc.collect()
-    torch.cuda.empty_cache()
     while True:
+        gc.collect()
+        torch.cuda.empty_cache()
         metrics = model_engine.train_batch()
         train_dataloader.sync_epoch()
         if lora_config is not None:
