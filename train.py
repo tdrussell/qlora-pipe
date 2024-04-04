@@ -83,6 +83,8 @@ def write_metrics(tb_writer, prefix, metrics, step):
 
     if len(metrics) >= 7:
         tb_writer.add_scalar(f'{prefix}/load_balancing_loss', metrics[6].mean().item(), step)
+    if len(metrics) >= 8:
+        tb_writer.add_scalar(f'{prefix}/alternate_load_balancing_loss', metrics[7].mean().item(), step)
 
 
 def evaluate(model_engine, eval_dataloader, tb_writer, step, eval_gradient_accumulation_steps):
@@ -122,10 +124,13 @@ def save_lora(model_engine, pipeline_model, lora_config, save_dir, args):
         os.makedirs(tmp_dir, exist_ok=False)
     deepspeed.comm.barrier()
     if dp_id == 0:
-        partial_state_dict = {
-            p.original_name.replace('.default', '').replace('.modules_to_save', ''): p
-            for p in pipeline_model.parameters() if p.requires_grad
-        }
+        partial_state_dict = {}
+        for name, p in pipeline_model.named_parameters():
+            if p.requires_grad:
+                if not hasattr(p, 'original_name'):
+                    print(f'WARNING: parameter {name} requires_grad but does not have original_name. Not saving it.')
+                    continue
+                partial_state_dict[p.original_name.replace('.default', '').replace('.modules_to_save', '')] = p
         torch.save(partial_state_dict, os.path.join(tmp_dir, f'state_dict_{stage_id}.bin'))
     deepspeed.comm.barrier()
     if dp_id == 0 and stage_id == 0:

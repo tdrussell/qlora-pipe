@@ -117,19 +117,19 @@ class LmHeadPipe(nn.Module):
         return self.orig(hidden_states), labels, *router_logits
 
 
-# def load_balancing_loss_func(gate_logits: torch.Tensor, num_experts: torch.Tensor = None, top_k=2) -> float:
-#     if isinstance(gate_logits, tuple):
-#         compute_device = gate_logits[0].device
-#         stacked_gate_logits = torch.stack([layer_gate.to(compute_device) for layer_gate in gate_logits], dim=0)
+def load_balancing_loss_func(gate_logits: torch.Tensor, num_experts: torch.Tensor = None, top_k=2) -> float:
+    if isinstance(gate_logits, tuple):
+        compute_device = gate_logits[0].device
+        stacked_gate_logits = torch.stack([layer_gate.to(compute_device) for layer_gate in gate_logits], dim=0)
 
-#     routing_weights = torch.nn.functional.softmax(stacked_gate_logits, dim=-1) # [num_layers, num_tokens, num_experts]
-#     _, selected_experts = torch.topk(routing_weights, top_k, dim=-1) # [num_layers, num_tokens, top_k]
-#     expert_mask = torch.nn.functional.one_hot(selected_experts, num_experts) # [num_layers, num_tokens, top_k, num_experts]
-#     # For a given token, determine if it was routed to a given expert. Think of this as a collection of top_k-hot vectors.
-#     expert_mask = torch.max(expert_mask, dim=-2).values.float() # [num_layers, num_tokens, num_experts]
-#     tokens_per_layer_and_expert = torch.mean(expert_mask, dim=-2) # [num_layers, num_experts]
-#     router_prob_per_layer_and_expert = torch.mean(routing_weights, dim=-2) # [num_layers, num_experts]
-#     return torch.mean(tokens_per_layer_and_expert * router_prob_per_layer_and_expert) * num_experts**2
+    routing_weights = torch.nn.functional.softmax(stacked_gate_logits, dim=-1) # [num_layers, num_tokens, num_experts]
+    _, selected_experts = torch.topk(routing_weights, top_k, dim=-1) # [num_layers, num_tokens, top_k]
+    expert_mask = torch.nn.functional.one_hot(selected_experts, num_experts) # [num_layers, num_tokens, top_k, num_experts]
+    # For a given token, determine if it was routed to a given expert. Think of this as a collection of top_k-hot vectors.
+    expert_mask = torch.max(expert_mask, dim=-2).values.float() # [num_layers, num_tokens, num_experts]
+    tokens_per_layer_and_expert = torch.mean(expert_mask, dim=-2) # [num_layers, num_experts]
+    router_prob_per_layer_and_expert = torch.mean(routing_weights, dim=-2) # [num_layers, num_experts]
+    return torch.mean(tokens_per_layer_and_expert * router_prob_per_layer_and_expert) * num_experts**2
 
 
 class MixtralForCausalLMPipe(PipelineModel, transformers.MixtralForCausalLM):
@@ -153,9 +153,10 @@ class MixtralForCausalLMPipe(PipelineModel, transformers.MixtralForCausalLM):
             aux_loss = modeling_mixtral.load_balancing_loss_func(
                 router_logits, self.num_experts, self.num_experts_per_tok
             )
+            alternate_aux_loss = load_balancing_loss_func(router_logits, self.num_experts, self.num_experts_per_tok)
             loss = metrics[0]
             loss += self.load_balancing_loss_coef * aux_loss
-            metrics = (loss, *metrics[1:], aux_loss)
+            metrics = (loss, *metrics[1:], aux_loss, alternate_aux_loss)
         return metrics
 
     def to_layer_specs(self):
