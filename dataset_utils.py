@@ -77,8 +77,8 @@ def load_axolotl_dataset(dataset_path, tokenizer, sequence_len, eval_size):
         cfg = yaml.safe_load(f.read())
     if 'val_set_size' not in cfg and eval_size:
         cfg['val_set_size'] = eval_size
-    if 'sequence_len' not in cfg and sequence_len:
-        cfg['sequence_len'] = sequence_len
+    cfg['sequence_len'] = sequence_len
+    cfg['tokenizer_config'] = 'dummy'
     # these two don't matter, but they have to be set
     cfg['batch_size'] = 1
     cfg['num_epochs'] = 1
