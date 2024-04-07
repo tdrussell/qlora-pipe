@@ -1,23 +1,6 @@
 # Paths
 model = '/data/models/Mistral-7B-v0.1'
-output_dir = '/home/anon/training_runs/mistral_7b_alpaca'
-
-# Dataset configuration
-dataset_type = 'axolotl'
-dataset_path = 'examples/alpaca.yml'
-# set a cache directory if you're using 'doclist' or 'textfile' dataset types
-# (for axolotl, it's unneeded because axolotl code automatically caches everything behind the scenes)
-#dataset_cache_dir = "/home/anon/data/cache/something"
-sequence_len = 2048
-eval_size = 0.01
-
-# Instead of using eval_size which splits off some of dataset, we can have a completely separate dataset for eval.
-# This can be useful if you're training on raw text data, so that the eval set remains completely fixed, even if
-# you change training sequence_len, etc.
-# eval_dataset_path = "/home/anon/data/my_dataset/eval_data.jsonl"
-# eval_dataset_type = 'doclist'
-# eval_dataset_cache_dir = "/home/anon/data/cache/my_dataset_eval"
-# eval_sequence_len = 4096
+output_dir = '/home/anon/training_runs/mistral_7b_example'
 
 # Lora configuration
 # can use full_fine_tune=true and load_in_4bit=false to train the whole model instead of a LoRA
@@ -41,7 +24,7 @@ lora_dropout = 0.05
 
 # Optimization configuration
 epochs = 2
-lr_scheduler = 'cosine'
+lr_scheduler = 'cosine'  # can also be 'constant'
 warmup_steps = 100
 
 # might be useful if resuming from a checkpoint and you want to change the LR and force it to something
@@ -80,3 +63,44 @@ activation_checkpointing = true
 # if true, we attempt to resume training from the most recent directory inside output_dir (the directory names are timestamps)
 # so, to resume, just run the exact same command but set this to true first
 resume_from_checkpoint = false
+
+
+# Dataset configuration
+
+# How to combine multiple datasets if you have more than one.
+# Can be 'concatenate' or 'interleave'. Will be 'concatenate' if not set.
+dataset_combination_mode = 'interleave'
+# When to stop interleaving datasets when using mode 'interleave'. Either 'first_exhausted' or 'all_exhausted'.
+# Default if not set: 'first_exhausted'
+dataset_interleave_stopping_strategy = 'all_exhausted'
+# Can set this lower than training, so we don't drop as many examples when trying to make equal-sized batches.
+# Default if not set: same as training GAS.
+eval_gradient_accumulation_steps = 1
+
+[[datasets]]
+# Arbitrary name, used only for separately logging eval metrics. Will be dataset0, dataset1, etc if not set.
+name = 'alpaca'
+dataset_type = 'axolotl'
+dataset_path = 'examples/alpaca.yml'
+sequence_len = 2048
+eval_size = 0.02
+# Relative sampling weight, when using combination mode 'interleave'. Will be 1 if not set.
+sample_weight = 1
+
+[[datasets]]
+name = 'capybara'
+dataset_type = 'axolotl'
+dataset_path = 'examples/capybara.yml'
+sequence_len = 2048
+eval_size = 0.02
+sample_weight = 1.5
+
+# In addition to using eval_size which splits off some of the dataset, we can have completely separate datasets for eval.
+# This can be useful if you're training on raw text data, so that the eval set remains completely fixed, even if
+# you change training sequence_len, etc.
+# This is just an example, typically you wouldn't have this overlap a training dataset.
+# [[eval_datasets]]
+# name = 'capybara'
+# dataset_type = 'axolotl'
+# dataset_path = 'examples/capybara.yml'
+# sequence_len = 2048

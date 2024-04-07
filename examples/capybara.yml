@@ -1,0 +1,5 @@
+datasets:
+  - path: ssmi153/Capybara-ShareGPT
+    type: sharegpt
+    conversation: mistral
+

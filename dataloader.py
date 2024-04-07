@@ -49,12 +49,7 @@ class DistributedBatchSamper(torch.utils.data.Sampler):
         self.group_by_length = group_by_length
         self.seed = seed
 
-        if is_main_process():
-            print('loading dataset, this may take a while')
-            enumerator = tqdm(enumerate(self.dataset))
-        else:
-            enumerator = enumerate(self.dataset)
-        indices = [(i, len(item['input_ids'])) for i, item in enumerator]
+        indices = list(enumerate(self.dataset['length']))
         if self.group_by_length:
             indices.sort(key=lambda t: t[1], reverse=True)
         elif self.shuffle:

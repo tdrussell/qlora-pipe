@@ -19,7 +19,7 @@ import toml
 import bitsandbytes
 from safetensors.torch import save_file
 
-from dataset_utils import load_dataset
+from dataset_utils import load_datasets
 import dataloader
 from utils import *
 import engine
@@ -87,14 +87,11 @@ def write_metrics(tb_writer, prefix, metrics, step):
         tb_writer.add_scalar(f'{prefix}/alternate_load_balancing_loss', metrics[7].mean().item(), step)
 
 
-def evaluate(model_engine, eval_dataloader, tb_writer, step, eval_gradient_accumulation_steps):
-    if is_main_process():
-        print('Running eval')
+def evaluate_single(model_engine, name, eval_dataloader, tb_writer, step, eval_gradient_accumulation_steps):
     orig_micro_batches = model_engine.micro_batches
     model_engine.micro_batches = eval_gradient_accumulation_steps
     iterator = iter(eval_dataloader)
     all_metrics = None
-    start = time.time()
     while True:
         metrics = model_engine.eval_batch(iterator)
         eval_dataloader.sync_epoch()
@@ -105,12 +102,21 @@ def evaluate(model_engine, eval_dataloader, tb_writer, step, eval_gradient_accum
         for i, metric in enumerate(metrics):
             all_metrics[i].append(metric)
 
-    duration = time.time() - start
     eval_dataloader.reset()
     model_engine.micro_batches = orig_micro_batches
     eval_metrics = [torch.cat(metric_list) for metric_list in all_metrics]
     if is_main_process():
-        write_metrics(tb_writer, 'eval', eval_metrics, step)
+        write_metrics(tb_writer, f'eval/{name}', eval_metrics, step)
+
+
+def evaluate(model_engine, eval_dataloaders, tb_writer, step, eval_gradient_accumulation_steps):
+    if is_main_process():
+        print('Running eval')
+    start = time.time()
+    for name, eval_dataloader in eval_dataloaders.items():
+        evaluate_single(model_engine, name, eval_dataloader, tb_writer, step, eval_gradient_accumulation_steps)
+    duration = time.time() - start
+    if is_main_process():
         tb_writer.add_scalar('eval/eval_time_sec', duration, step)
 
 
@@ -407,22 +413,7 @@ if __name__ == '__main__':
     tokenizer = transformers.AutoTokenizer.from_pretrained(config['model'], local_files_only=True, use_fast=False, add_bos_token=True, add_eos_token=False)
     tokenizer.pad_token = tokenizer.eos_token
 
-    dataset_cache_dir = None if 'dataset_cache_dir' not in config else config['dataset_cache_dir']
-    subsample = None if 'subsample_dataset' not in config else config['subsample_dataset']
-    if 'eval_dataset_path' in config:
-        assert 'eval_size' not in config or config['eval_size'] == 0
-        train_data, _ = load_dataset(config['dataset_path'], config['dataset_type'], tokenizer, config['sequence_len'], 0, subsample=subsample)
-        eval_dataset_cache_dir = None if 'eval_dataset_cache_dir' not in config else config['eval_dataset_cache_dir']
-        eval_data, _ = load_dataset(config['eval_dataset_path'], config['eval_dataset_type'], tokenizer, config['eval_sequence_len'], 0)
-    else:
-        train_data, eval_data = load_dataset(
-            config['dataset_path'],
-            config['dataset_type'],
-            tokenizer,
-            config['sequence_len'],
-            config['eval_size'],
-            subsample=subsample
-        )
+    train_data, eval_data_map = load_datasets(config, tokenizer)
 
     if args.debug_dataset:
         if is_main_process():
@@ -523,28 +514,31 @@ if __name__ == '__main__':
     # this is a separate option, because if it's too high we might drop a significant fraction of the eval dataset
     eval_gradient_accumulation_steps = config['eval_gradient_accumulation_steps'] if 'eval_gradient_accumulation_steps' in config else 1
     # Eval dataset doesn't need to repeat; we just use this to track "epoch" so we know when we're done iterating over it.
-    eval_dataloader = dataloader.PipelineDataLoader(
-        eval_data,
-        tokenizer,
-        model_engine.train_micro_batch_size_per_gpu(),
-        eval_gradient_accumulation_steps,
-        model_engine.grid.get_data_parallel_world_size(),
-        model_engine.grid.get_data_parallel_rank(),
-        shuffle=False,
-        group_by_length=False if 'group_by_length' not in config else config['group_by_length'],
-        # If we drop_last, we may lose up to batch_size*num_replicas data points. If we don't drop_last, we may have up
-        # to an extra num_replicas data points as padding (and the last batch may be smaller). For a small dataset where
-        # the batch_size doesn't affect any dynamics (since it's eval), the latter seems better.
-        # TODO: drop_last=False still broken with pipelining, need to fix
-        drop_last=True,
-        batch_size_tokens=None if 'batch_size_tokens' not in config else config['batch_size_tokens'],
-    )
+    eval_dataloaders = {
+        name: dataloader.PipelineDataLoader(
+            eval_data,
+            tokenizer,
+            model_engine.train_micro_batch_size_per_gpu(),
+            eval_gradient_accumulation_steps,
+            model_engine.grid.get_data_parallel_world_size(),
+            model_engine.grid.get_data_parallel_rank(),
+            shuffle=False,
+            group_by_length=False if 'group_by_length' not in config else config['group_by_length'],
+            # If we drop_last, we may lose up to batch_size*num_replicas data points. If we don't drop_last, we may have up
+            # to an extra num_replicas data points as padding (and the last batch may be smaller). For a small dataset where
+            # the batch_size doesn't affect any dynamics (since it's eval), the latter seems better.
+            # TODO: drop_last=False still broken with pipelining, need to fix
+            drop_last=True,
+            batch_size_tokens=None if 'batch_size_tokens' not in config else config['batch_size_tokens'],
+        )
+        for name, eval_data in eval_data_map.items()
+    }
 
     tb_writer = SummaryWriter(log_dir=run_dir) if is_main_process() else None
 
     epoch = train_dataloader.epoch
     if config['eval_before_first_step'] and not config['resume_from_checkpoint']:
-        evaluate(model_engine, eval_dataloader, tb_writer, 0, eval_gradient_accumulation_steps)
+        evaluate(model_engine, eval_dataloaders, tb_writer, 0, eval_gradient_accumulation_steps)
 
     while True:
         gc.collect()
@@ -586,7 +580,7 @@ if __name__ == '__main__':
             save_model(model_engine, pipeline_model, lora_config, f'{run_dir}/step{step}', args, config)
 
         if step % config['eval_steps'] == 0:
-            evaluate(model_engine, eval_dataloader, tb_writer, step, eval_gradient_accumulation_steps)
+            evaluate(model_engine, eval_dataloaders, tb_writer, step, eval_gradient_accumulation_steps)
 
         if need_to_checkpoint():
             model_engine.save_checkpoint(
