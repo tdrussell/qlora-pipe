@@ -17,6 +17,7 @@ That being said, if something doesn't work right, or you would like it to suppor
 - Support for resuming training from a checkpoint, including the dataloader state, to easily allow training in a piecemeal fashion
 - Useful metrics logged to Tensorboard
 - Ability to specify a separate, fixed evaluation dataset
+- Train on multiple datasets simultaneously, with different sampling ratios per dataset
 - Currently supports Llama, Mistral, Mixtral, and Qwen-1.5 model families
 
 ## Installing
