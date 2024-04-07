@@ -110,5 +110,5 @@ Sample packing is not currently implemented. Instead, there is the option `batch
 
 ## Changelog
 ### 2024-04-07
-- Removed the need for manually specifying cache directories for datasets. All dataset processing using the Huggingface Datasets library and takes advantage of the automatic caching that it provides.
+- Removed the need for manually specifying cache directories for datasets. All dataset processing uses the Huggingface Datasets library and takes advantage of the automatic caching that it provides.
 - Added the ability to specify multiple datasets, with different ways to combine them. __This breaks the old config format for datasets.__ Refer to the example config for what it should look like now.
