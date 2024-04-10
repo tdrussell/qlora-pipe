@@ -64,6 +64,12 @@ activation_checkpointing = true
 # so, to resume, just run the exact same command but set this to true first
 resume_from_checkpoint = false
 
+# Loading the optimizer states seems to cause some kind of unavoidable VRAM memory leak.
+# It's very small, only about 0.2 GB in cases I've seen. But if you are very close to the
+# limit, it can cause resuming from checkpoint to OOM. As a last resort, you can uncomment
+# this to not load the optimizer states and hopefully the resumption won't OOM.
+#load_optimizer_states = false
+
 
 # Dataset configuration
 

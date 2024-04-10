@@ -3,23 +3,28 @@ from torch import nn
 import torch.nn.functional as F
 import transformers
 import accelerate
-from deepspeed.runtime.pipe.module import LayerSpec
 from transformers.models.mixtral import modeling_mixtral
 
-from pipeline_model import PipelineModel
+from pipeline_model import PipelineModel, LayerSpec, ComputeMetrics
+from utils import DTYPE_MAP
 
 
 class EmbeddingPipe(nn.Module):
-    def __init__(self, loader_util, orig, attn_implementation, sliding_window):
+    def __init__(self, loader_util, orig, attn_implementation, sliding_window, embedding_on_cpu=False):
         super().__init__()
         self.orig = orig
         self.attn_implementation = attn_implementation
         self.sliding_window = sliding_window
+        self.embedding_on_cpu = embedding_on_cpu
         loader_util.load_state_dict_into_module(self)
 
     def forward(self, inputs):
         input_ids, attention_mask, position_ids, labels = inputs
-        inputs_embeds = self.orig(input_ids)
+        original_device = input_ids.device
+        if self.embedding_on_cpu:
+            self.orig.to('cpu')
+            input_ids = input_ids.to('cpu')
+        inputs_embeds = self.orig(input_ids).to(original_device)
         batch_size, seq_length = input_ids.shape
 
         if self.attn_implementation == "flash_attention_2":
@@ -132,23 +137,17 @@ def load_balancing_loss_func(gate_logits: torch.Tensor, num_experts: torch.Tenso
     return torch.mean(tokens_per_layer_and_expert * router_prob_per_layer_and_expert) * num_experts**2
 
 
-class MixtralForCausalLMPipe(PipelineModel, transformers.MixtralForCausalLM):
-    def __init__(self, model_path, quantization_config, load_balancing_loss_coef=None, **kwargs):
-        config = transformers.MixtralConfig.from_pretrained(model_path)
-        config._attn_implementation = 'flash_attention_2'
-        # we can't be float32 when constructing the model or it complains because
-        # of flash attention
-        torch.set_default_dtype(torch.bfloat16)
-        with accelerate.init_empty_weights():
-            transformers.MixtralForCausalLM.__init__(self, config)
-        PipelineModel.__init__(self, model_path, quantization_config, **kwargs)
-        torch.set_default_dtype(torch.float32)
+class MixtralComputeMetrics(ComputeMetrics):
+    def __init__(self, load_balancing_loss_coef, num_experts, num_experts_per_tok, **kwargs):
+        super().__init__(**kwargs)
         self.load_balancing_loss_coef = load_balancing_loss_coef
+        self.num_experts = num_experts
+        self.num_experts_per_tok = num_experts_per_tok
 
-    def compute_metrics(self, inputs):
+    def forward(self, inputs):
         logits, labels, *router_logits = inputs
         router_logits = tuple(router_logits)
-        metrics = super().compute_metrics((logits, labels))
+        metrics = super().forward((logits, labels))
         if self.load_balancing_loss_coef is not None:
             aux_loss = modeling_mixtral.load_balancing_loss_func(
                 router_logits, self.num_experts, self.num_experts_per_tok
@@ -158,6 +157,18 @@ class MixtralForCausalLMPipe(PipelineModel, transformers.MixtralForCausalLM):
             loss += self.load_balancing_loss_coef * aux_loss
             metrics = (loss, *metrics[1:], aux_loss, alternate_aux_loss)
         return metrics
+
+
+class MixtralForCausalLMPipe(PipelineModel, transformers.MixtralForCausalLM):
+    def __init__(self, config, quantization_config, **kwargs):
+        model_config = transformers.MixtralConfig.from_pretrained(config['model'])
+        model_config._attn_implementation = 'flash_attention_2'
+        torch.set_default_dtype(DTYPE_MAP[config['bnb_compute_dtype']])
+        with accelerate.init_empty_weights():
+            transformers.MixtralForCausalLM.__init__(self, model_config)
+        PipelineModel.__init__(self, config, quantization_config, **kwargs)
+        torch.set_default_dtype(torch.float32)
+        self.load_balancing_loss_coef = config.get('load_balancing_loss_coef', None)
 
     def to_layer_specs(self):
         def initial_layer(inputs):
@@ -172,11 +183,18 @@ class MixtralForCausalLMPipe(PipelineModel, transformers.MixtralForCausalLM):
 
         result = [
             initial_layer,
-            LayerSpec(EmbeddingPipe, self.loader_util, self.model.embed_tokens, self.model.config._attn_implementation, self.model.config.sliding_window),
+            LayerSpec(
+                EmbeddingPipe,
+                self.loader_util,
+                self.model.embed_tokens,
+                self.model.config._attn_implementation,
+                self.model.config.sliding_window,
+                embedding_on_cpu=not self.train_config['full_fine_tune']
+            )
         ]
         for block in self.model.layers:
             result.append(LayerSpec(MixtralDecoderLayerPipe, self.loader_util, block))
-        result.append(LayerSpec(MixtralRMSNormPipe, self.loader_util, self.model.norm))
+        result.append(LayerSpec(MixtralRMSNormPipe, self.loader_util, self.model.norm, _estimated_size=0))
         result.append(LayerSpec(LmHeadPipe, self.loader_util, self.lm_head))
-        result.append(self.compute_metrics)
+        result.append(LayerSpec(MixtralComputeMetrics, self.load_balancing_loss_coef, self.num_experts, self.num_experts_per_tok, focal_loss_gamma=self.focal_loss_gamma))
         return result

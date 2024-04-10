@@ -5,6 +5,9 @@ from torch import nn
 import transformers
 from deepspeed.accelerator import get_accelerator
 from transformers.integrations import get_keys_to_not_convert, replace_with_bnb_linear
+from deepspeed.runtime.pipe import module as ds_pipe_module
+
+from utils import *
 
 
 def entropy_fn(logits):
@@ -29,34 +32,33 @@ def top_k_accuracy(logits, labels, k_list, ignore_index=-100):
     return accuracies
 
 
-class PipelineModel(nn.Module):
+class LayerSpec(ds_pipe_module.LayerSpec):
+    def __init__(self, typename, *module_args, **module_kwargs):
+        super().__init__(typename, *module_args, **module_kwargs)
 
-    def __init__(self, model_path, quantization_config, focal_loss_gamma=0):
-        self.loader_util = LoaderUtil(model_path)
+    def build(self):
+        self.module_kwargs.pop('_estimated_size', None)
+        return self.typename(*self.module_args, **self.module_kwargs)
+
+    @property
+    def estimated_size(self):
+        return self.module_kwargs.get('_estimated_size', 1)
+
+
+class ComputeMetrics(nn.Module):
+    def __init__(self, focal_loss_gamma=0):
+        super().__init__()
         self.focal_loss_gamma = focal_loss_gamma
 
-        if quantization_config is not None:
-            modules_to_not_convert = get_keys_to_not_convert(self)
-            if not isinstance(modules_to_not_convert, list):
-                modules_to_not_convert = [modules_to_not_convert]
-            replace_with_bnb_linear(
-                self, modules_to_not_convert=modules_to_not_convert, quantization_config=quantization_config
-            )
-            # Make sure to set this or PEFT (and probably other things) will break in strange ways.
-            # We only need this because we do the loading and quanting ourselves.
-            self.is_loaded_in_4bit = True
-
-        for name, p in self.named_parameters():
-            p.original_name = name
-
-    def compute_metrics(self, inputs):
+    def forward(self, inputs):
         logits, labels = inputs
         logits = logits.float()
         # Shift so that tokens < n predict n
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()
         # Flatten the tokens
-        shift_logits = shift_logits.view(-1, self.config.vocab_size)
+        vocab_size = shift_logits.size(-1)
+        shift_logits = shift_logits.view(-1, vocab_size)
         shift_labels = shift_labels.view(-1)
         # Enable model parallelism
         shift_labels = shift_labels.to(shift_logits.device)
@@ -78,6 +80,30 @@ class PipelineModel(nn.Module):
         loss = optimized_loss_unreduced.mean()
         loss_unreduced = loss_unreduced.detach()
         return loss, loss_unreduced, entropy, *accuracies
+
+
+class PipelineModel(nn.Module):
+
+    def __init__(self, config, quantization_config):
+        self.train_config = config
+        self.loader_util = LoaderUtil(config['model'])
+        self.focal_loss_gamma = config.get('focal_loss_gamma', 0)
+        if self.focal_loss_gamma > 0 and is_main_process():
+            print(f'Using focal loss with gamma={self.focal_loss_gamma}')
+
+        if quantization_config is not None:
+            modules_to_not_convert = get_keys_to_not_convert(self)
+            if not isinstance(modules_to_not_convert, list):
+                modules_to_not_convert = [modules_to_not_convert]
+            replace_with_bnb_linear(
+                self, modules_to_not_convert=modules_to_not_convert, quantization_config=quantization_config
+            )
+            # Make sure to set this or PEFT (and probably other things) will break in strange ways.
+            # We only need this because we do the loading and quanting ourselves.
+            self.is_loaded_in_4bit = True
+
+        for name, p in self.named_parameters():
+            p.original_name = name
 
     # need to override this method
     def to_layer_specs(self):

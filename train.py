@@ -14,7 +14,7 @@ from torch.utils.tensorboard import SummaryWriter
 import transformers
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 import deepspeed
-from deepspeed.runtime.pipe.module import PipelineModule, LayerSpec
+from deepspeed.runtime.pipe.module import LayerSpec
 import toml
 import bitsandbytes
 from safetensors.torch import save_file
@@ -25,8 +25,6 @@ from utils import *
 import engine
 import llama_pipe
 import mixtral_pipe
-
-DTYPE_MAP = {'float32': torch.float32, 'float16': torch.float16, 'bfloat16': torch.bfloat16}
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--config', help='Path to TOML configuration file.')
@@ -51,35 +49,44 @@ def print_model_info(model):
             print()
 
 
+def set_config_defaults(config):
+    config['full_fine_tune'] = config.get('full_fine_tune', False)
+    config['load_in_4bit'] = config.get('load_in_4bit', False)
+
+
 def get_most_recent_run_dir(output_dir):
     return list(sorted(glob.glob(os.path.join(output_dir, '*'))))[-1]
 
 
 def write_metrics(tb_writer, prefix, metrics, step):
-    losses = metrics[1].view(-1)
-    sorted_losses, sorted_losses_idx = torch.sort(losses)
-    quantiles = torch.tensor([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.96, 0.97, 0.98, 0.99, 0.999], dtype=torch.float32).to(losses.device)
-    quantiles_idx = [int(len(losses)*quantile) for quantile in quantiles]
-    loss_quantiles = [sorted_losses[i] for i in quantiles_idx]
-    for quantile, value in zip(quantiles, loss_quantiles):
-        tb_writer.add_scalar(f'{prefix}/loss_quantile_{quantile:.3f}', value, step)
-    tb_writer.add_scalar(f'{prefix}/loss', losses.mean().item(), step)
     tb_writer.add_scalar(f'{prefix}/optimized_loss', metrics[0].mean().item(), step)
-    tb_writer.add_histogram(f'{prefix}/log_loss_hist', torch.log(1e-10 + losses), step)
 
-    entropy = metrics[2].view(-1)
-    assert entropy.size() == losses.size()
-    tb_writer.add_scalar(f'{prefix}/entropy', entropy.mean().item(), step)
-    sorted_entropy = entropy[sorted_losses_idx]
-    entropy_quantiles = []
-    for i, j in itertools.zip_longest(quantiles_idx, quantiles_idx[1:]):
-        entropy_quantiles.append(sorted_entropy[i:j].mean())
-    for quantile, value in zip(quantiles, entropy_quantiles):
-        tb_writer.add_scalar(f'{prefix}/entropy_quantile_{quantile:.3f}', value, step)
+    if len(metrics) >= 2:
+        losses = metrics[1].view(-1)
+        sorted_losses, sorted_losses_idx = torch.sort(losses)
+        quantiles = torch.tensor([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.96, 0.97, 0.98, 0.99, 0.999], dtype=torch.float32).to(losses.device)
+        quantiles_idx = [int(len(losses)*quantile) for quantile in quantiles]
+        loss_quantiles = [sorted_losses[i] for i in quantiles_idx]
+        for quantile, value in zip(quantiles, loss_quantiles):
+            tb_writer.add_scalar(f'{prefix}/loss_quantile_{quantile:.3f}', value, step)
+        tb_writer.add_scalar(f'{prefix}/loss', losses.mean().item(), step)
+        tb_writer.add_histogram(f'{prefix}/log_loss_hist', torch.log(1e-10 + losses), step)
 
-    tb_writer.add_scalar(f'{prefix}/top1_accuracy', metrics[3].mean().item(), step)
-    tb_writer.add_scalar(f'{prefix}/top5_accuracy', metrics[4].mean().item(), step)
-    tb_writer.add_scalar(f'{prefix}/top20_accuracy', metrics[5].mean().item(), step)
+    if len(metrics) >= 3:
+        entropy = metrics[2].view(-1)
+        assert entropy.size() == losses.size()
+        tb_writer.add_scalar(f'{prefix}/entropy', entropy.mean().item(), step)
+        sorted_entropy = entropy[sorted_losses_idx]
+        entropy_quantiles = []
+        for i, j in itertools.zip_longest(quantiles_idx, quantiles_idx[1:]):
+            entropy_quantiles.append(sorted_entropy[i:j].mean())
+        for quantile, value in zip(quantiles, entropy_quantiles):
+            tb_writer.add_scalar(f'{prefix}/entropy_quantile_{quantile:.3f}', value, step)
+
+    if len(metrics) >= 4:
+        tb_writer.add_scalar(f'{prefix}/top1_accuracy', metrics[3].mean().item(), step)
+        tb_writer.add_scalar(f'{prefix}/top5_accuracy', metrics[4].mean().item(), step)
+        tb_writer.add_scalar(f'{prefix}/top20_accuracy', metrics[5].mean().item(), step)
 
     if len(metrics) >= 7:
         tb_writer.add_scalar(f'{prefix}/load_balancing_loss', metrics[6].mean().item(), step)
@@ -262,12 +269,14 @@ def one_at_a_time():
 
 
 def load_pipeline_model_with_lora(config):
-    full_fine_tune = 'full_fine_tune' in config and config['full_fine_tune']
+    full_fine_tune = config['full_fine_tune']
     with open(os.path.join(config['model'], 'config.json')) as f:
         model_config = json.load(f)
         model_type = model_config['model_type'] if 'model_type' in model_config else 'llama'
 
-    if 'load_in_4bit' in config and config['load_in_4bit']:
+    bnb_compute_dtype = DTYPE_MAP[config['bnb_compute_dtype']]
+
+    if config['load_in_4bit']:
         assert not full_fine_tune
         no_quant_modules = ['lm_head']
         if model_type == 'mixtral':
@@ -275,7 +284,7 @@ def load_pipeline_model_with_lora(config):
             no_quant_modules.append('gate')
         quantization_config_params = {
             'load_in_4bit': True,
-            'bnb_4bit_compute_dtype': DTYPE_MAP[config['bnb_compute_dtype']],
+            'bnb_4bit_compute_dtype': bnb_compute_dtype,
             'bnb_4bit_quant_type': 'nf4',
             'bnb_4bit_use_double_quant': config['use_double_quant'],
             'llm_int8_skip_modules': no_quant_modules
@@ -284,20 +293,14 @@ def load_pipeline_model_with_lora(config):
     else:
         quantization_config = None
 
-    focal_loss_gamma = 0 if 'focal_loss_gamma' not in config else config['focal_loss_gamma']
-    if focal_loss_gamma > 0 and is_main_process():
-        print(f'Using focal loss with gamma={focal_loss_gamma}')
     if model_type == 'llama' or model_type == 'mistral':
-        model = llama_pipe.LlamaForCausalLMPipe(config['model'], quantization_config=quantization_config, focal_loss_gamma=focal_loss_gamma)
+        model = llama_pipe.LlamaForCausalLMPipe(config, quantization_config=quantization_config)
     elif model_type == 'mixtral':
-        model = mixtral_pipe.MixtralForCausalLMPipe(
-            config['model'],
-            quantization_config=quantization_config,
-            load_balancing_loss_coef=config['load_balancing_loss_coef'] if 'load_balancing_loss_coef' in config else None,
-            focal_loss_gamma=focal_loss_gamma
-        )
+        model = mixtral_pipe.MixtralForCausalLMPipe(config, quantization_config=quantization_config)
     elif model_type == 'qwen2':
-        model = llama_pipe.Qwen2ForCausalLMPipe(config['model'], quantization_config=quantization_config, focal_loss_gamma=focal_loss_gamma)
+        model = llama_pipe.Qwen2ForCausalLMPipe(config, quantization_config=quantization_config)
+    elif model_type == 'cohere':
+        model = llama_pipe.CohereForCausalLMPipe(config, quantization_config=quantization_config)
     else:
         raise NotImplementedError()
 
@@ -310,9 +313,9 @@ def load_pipeline_model_with_lora(config):
             checkpointable_layers.add(layer.typename.__name__)
     checkpointable_layers = list(checkpointable_layers)
 
-    partition_method = 'uniform' if full_fine_tune else 'type:decoderlayer|embedding|lmhead'
+    partition_method = 'estimated_size'
     if config['activation_checkpointing']:
-        pipeline_model = PipelineModule(
+        pipeline_model = engine.CustomPipelineModule(
             layers=layers,
             num_stages=config['pipeline_stages'],
             activation_checkpoint_interval=1,
@@ -321,23 +324,11 @@ def load_pipeline_model_with_lora(config):
             partition_method=partition_method
         )
     else:
-        pipeline_model = PipelineModule(
+        pipeline_model = engine.CustomPipelineModule(
             layers=layers,
             num_stages=config['pipeline_stages'],
             partition_method=partition_method
         )
-
-    if quantization_config is not None:
-        prepare_model_for_kbit_training(model, use_gradient_checkpointing=False)
-        # LlamaRMSNorm layers are in fp32 after kbit_training, so we need to
-        # convert them back to fp16/bf16 for flash-attn compatibility.
-        for name, module in model.named_modules():
-            dtype = DTYPE_MAP[config['bnb_compute_dtype']]
-            if "norm" in name or "gate" in name:
-                module.to(dtype)
-            if "lm_head" in name or "embed_tokens" in name:
-                if hasattr(module, "weight"):
-                    module.to(dtype)
 
     target_modules = config['target_modules'] if 'target_modules' in config else 'all-linear'
     if full_fine_tune:
@@ -397,6 +388,7 @@ if __name__ == '__main__':
     # rather than assume they are unchanged on the command line
     with open(args.config) as f:
         config = toml.load(f)
+    set_config_defaults(config)
 
     deepspeed.init_distributed()
 
@@ -491,7 +483,9 @@ if __name__ == '__main__':
     else:
         raise NotImplementedError()
 
-    if 'warmup_steps' in config:
+    load_optimizer_states = config.get('load_optimizer_states', True)
+    # if resuming and not loading optimizer states, we can't use warmup or the LR never changes from the initial value (still don't know why)
+    if 'warmup_steps' in config and load_optimizer_states:
         warmup_steps = config['warmup_steps']
         warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1/warmup_steps, total_iters=warmup_steps)
         lr_scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, schedulers=[warmup_scheduler, lr_scheduler], milestones=[warmup_steps])
@@ -500,11 +494,19 @@ if __name__ == '__main__':
 
     step = 1
     if config['resume_from_checkpoint']:
-        load_path, client_state = model_engine.load_checkpoint(run_dir, load_module_strict=False, load_lr_scheduler_states=True)
+        load_path, client_state = model_engine.load_checkpoint(
+            run_dir,
+            load_module_strict=False,
+            load_lr_scheduler_states=True,
+            load_optimizer_states=load_optimizer_states
+        )
         deepspeed.comm.barrier()  # just so the print below doesn't get swamped
         assert load_path is not None
         train_dataloader.load_state_dict(client_state['custom_loader'])
         step = client_state['step'] + 1
+        # if we skip loading the optimizer states, we need to step the LR scheduler so we start at the right value
+        if not load_optimizer_states:
+            model_engine.lr_scheduler.step()
 
     if 'force_constant_lr' in config:
         model_engine.lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1.0)

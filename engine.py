@@ -1,4 +1,7 @@
 import torch
+from torch import nn
+
+import deepspeed
 from deepspeed.accelerator import get_accelerator
 from deepspeed import comm as dist
 from deepspeed.runtime.config import DeepSpeedConfig
@@ -6,6 +9,9 @@ from deepspeed.runtime.pipe.engine import PipelineEngine, TRAIN_BATCH_TIMER, PIP
 from deepspeed.runtime.pipe import schedule
 from deepspeed.runtime.utils import PartitionedTensor
 from deepspeed.runtime.activation_checkpointing import checkpointing as ds_checkpointing
+from deepspeed.runtime.pipe.module import PipelineModule
+from deepspeed.runtime import utils as ds_utils
+from deepspeed.runtime.pipe.module import LayerSpec
 
 
 def initialize(args=None,
@@ -247,3 +253,70 @@ class CustomPipelineEngine(PipelineEngine):
 
     # make our forward pass method apply
     PipelineEngine._INSTRUCTION_MAP[schedule.ForwardPass] = _exec_forward_pass
+
+
+class CustomPipelineModule(PipelineModule):
+    def __init__(self, layers, **kwargs):
+        super().__init__(layers, **kwargs)
+
+    def _partition_layers(self, method='uniform'):
+        num_stages = self._topo.get_dim('pipe')
+        stage_id = self._topo.get_coord(self.global_rank).pipe
+
+        if self.global_rank == 0:
+            print(f'Partitioning pipeline stages with method {method}')
+
+        method = method.lower()
+
+        estimated_sizes = None
+        # Each stage gets a simple uniform number of layers.
+        if method == 'uniform':
+            num_layers = len(self._layer_specs)
+            self.parts = ds_utils.partition_uniform(num_items=num_layers, num_parts=num_stages)
+        elif method == 'parameters':
+            param_counts = self._count_layer_params()
+            self.parts = ds_utils.partition_balanced(weights=param_counts, num_parts=num_stages)
+        elif method.startswith('type:'):
+            layertype = method.split(':')[1]
+            binary_weights = [0] * len(self._layer_specs)
+            for idx in self._find_layer_type(layertype):
+                binary_weights[idx] = 1
+            self.parts = ds_utils.partition_balanced(weights=binary_weights, num_parts=num_stages)
+        elif method == 'profile':
+            raise NotImplementedError(f'Partitioning method {method} not implemented.')
+        elif method == 'estimated_size':
+            estimated_sizes = [getattr(l, 'estimated_size', 0) for l in self._layer_specs]
+            self.parts = ds_utils.partition_balanced(weights=estimated_sizes, num_parts=num_stages)
+        else:
+            raise NotImplementedError(f'Partitioning method {method} not implemented.')
+
+        # Print some information on the partitioning.
+        if self.global_rank == 0:
+            for stage in range(num_stages):
+                start = self.parts[stage]
+                stop = self.parts[stage + 1]
+                print(f'stage={stage} layers={stop - start}')
+                for idx, layer in enumerate(self._layer_specs[start:stop]):
+                    name = str(layer)
+                    if isinstance(layer, LayerSpec):
+                        name = layer.typename.__name__
+                    if isinstance(layer, nn.Module):
+                        name = layer.__class__.__name__
+                    else:
+                        try:
+                            name = layer.__name__
+                        except AttributeError:
+                            pass
+                    logstr = f'    {idx+start:2d}: {name}'
+                    if estimated_sizes:
+                        es = estimated_sizes[idx+start]
+                        logstr += f', estimated size: {es}'
+                    print(logstr)
+            if self.loss_fn:
+                try:
+                    print(f'  loss: {self.loss_fn.__name__}')
+                except AttributeError:
+                    print(f'  loss: {self.loss_fn.__class__.__name__}')
+        deepspeed.comm.barrier()
+
+        self._set_bounds(start=self.parts[stage_id], stop=self.parts[stage_id + 1])
