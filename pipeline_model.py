@@ -18,7 +18,7 @@ def entropy_fn(logits):
     # memory usage is huge. Chuck size of 128 seems good enough for now.
     for logits_chuck in torch.split(logits, 128):
         result.append(torch.distributions.Categorical(logits=logits_chuck).entropy())
-    return torch.cat(result)
+    return torch.cat(result).float()
 
 
 def top_k_accuracy(logits, labels, k_list, ignore_index=-100):
@@ -53,9 +53,9 @@ class ComputeMetrics(nn.Module):
 
     def forward(self, inputs):
         logits, labels = inputs
-        # Shift so that tokens < n predict n
-        shift_logits = logits[..., :-1, :].contiguous()
-        shift_labels = labels[..., 1:].contiguous()
+        shift_logits = logits
+        extra_ignored_labels = torch.full((labels.shape[0], 1), -100, device=logits.device)
+        shift_labels = torch.hstack((labels[..., 1:], extra_ignored_labels))
         # Flatten the tokens
         vocab_size = shift_logits.size(-1)
         shift_logits = shift_logits.view(-1, vocab_size)
@@ -65,8 +65,7 @@ class ComputeMetrics(nn.Module):
 
         loss_unreduced = Fast_CrossEntropyLoss.apply(shift_logits, shift_labels)
 
-        # if we mask the labels, those loss values will be 0
-        valid_loss = (loss_unreduced != 0)
+        valid_loss = (shift_labels >= 0)
         loss_unreduced = loss_unreduced[valid_loss]
         optimized_loss_unreduced = loss_unreduced
 
