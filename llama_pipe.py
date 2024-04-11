@@ -205,7 +205,7 @@ class CohereForCausalLMPipe(PipelineModel, transformers.CohereForCausalLM):
 
     def to_layer_specs(self):
         # the embedding table for this model is huge; load balance it better with some heuristics
-        embedding_relative_size = 7
+        embedding_relative_size = 4
 
         def initial_layer(inputs):
             input_ids, attention_mask, labels = inputs
@@ -226,7 +226,7 @@ class CohereForCausalLMPipe(PipelineModel, transformers.CohereForCausalLM):
                 self.model.embed_tokens,
                 self.model.config._attn_implementation,
                 embedding_on_cpu=embedding_on_cpu,
-                _estimated_size=2 if embedding_on_cpu else embedding_relative_size,
+                _estimated_size=1 if embedding_on_cpu else embedding_relative_size,
             ),
         ]
         for block in self.model.layers:

@@ -504,6 +504,9 @@ if __name__ == '__main__':
         assert load_path is not None
         train_dataloader.load_state_dict(client_state['custom_loader'])
         step = client_state['step'] + 1
+        del client_state
+        gc.collect()
+        torch.cuda.empty_cache()
         # if we skip loading the optimizer states, we need to step the LR scheduler so we start at the right value
         if not load_optimizer_states:
             model_engine.lr_scheduler.step()
@@ -543,8 +546,6 @@ if __name__ == '__main__':
         evaluate(model_engine, eval_dataloaders, tb_writer, 0, eval_gradient_accumulation_steps)
 
     while True:
-        gc.collect()
-        torch.cuda.empty_cache()
         metrics = model_engine.train_batch()
         train_dataloader.sync_epoch()
         if lora_config is not None:

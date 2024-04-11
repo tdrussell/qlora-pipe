@@ -8,6 +8,7 @@ from transformers.integrations import get_keys_to_not_convert, replace_with_bnb_
 from deepspeed.runtime.pipe import module as ds_pipe_module
 
 from utils import *
+from kernels.cross_entropy_loss import Fast_CrossEntropyLoss
 
 
 def entropy_fn(logits):
@@ -52,7 +53,6 @@ class ComputeMetrics(nn.Module):
 
     def forward(self, inputs):
         logits, labels = inputs
-        logits = logits.float()
         # Shift so that tokens < n predict n
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()
@@ -63,7 +63,8 @@ class ComputeMetrics(nn.Module):
         # Enable model parallelism
         shift_labels = shift_labels.to(shift_logits.device)
 
-        loss_unreduced = torch.nn.CrossEntropyLoss(reduction='none')(shift_logits, shift_labels)
+        loss_unreduced = Fast_CrossEntropyLoss.apply(shift_logits, shift_labels)
+
         # if we mask the labels, those loss values will be 0
         valid_loss = (loss_unreduced != 0)
         loss_unreduced = loss_unreduced[valid_loss]
