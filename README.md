@@ -18,7 +18,7 @@ That being said, if something doesn't work right, or you would like it to suppor
 - Useful metrics logged to Tensorboard
 - Ability to specify a separate, fixed evaluation dataset
 - Train on multiple datasets simultaneously, with different sampling ratios per dataset
-- Currently supports Llama, Mistral, Mixtral, and Qwen-1.5 model families
+- Models currently supported: Llama, Mistral, Mixtral, Qwen-1.5, Cohere (Command R)
 
 ## Installing
 Clone the repository:
@@ -64,7 +64,7 @@ pip install -r requirements.txt
 ```
 
 ## Training
-Edit the config files in the examples directory to your liking. At minimum, change the paths at the top to point to your model and desired output directory. Per-device batch size, gradient accumulation steps, and optimizer settings are specified in the Deepspeed JSON config file. Everything else is in the TOML config file. Launch the training script:
+Edit the config files in the examples directory to your liking. At minimum, change the paths at the top to point to your model and desired output directory. Per-device batch size and gradient accumulation steps are specified in the Deepspeed JSON config file. Everything else is in the TOML config file. Launch the training script:
 ```
 NCCL_P2P_DISABLE="1" NCCL_IB_DISABLE="1" deepspeed --num_gpus=1 train.py --deepspeed --deepspeed_config examples/ds_config_7b.json --config examples/config_7b.toml
 ```
@@ -109,6 +109,12 @@ You can have multiple datasets. Just add additional `[[datasets]]` entries. When
 Sample packing is not currently implemented. Instead, there is the option `batch_size_tokens`. If this field is set, the batch size in the Deepspeed config file is ignored, and instead the batch size is adjusted dynamically to target a fixed number of tokens per batch, per device. This was easier to implement than sample packing, and does basically the same thing. It is also efficient: if I set batch_size_tokens to a modest 10000 and train a 7B model with the Alpaca dataset, all my 4090s hit their 350W power limit cap. Unless I'm missing something (definitely possible), it seems there is no need to support sample packing.
 
 ## Changelog
+### 2024-04-16
+- Optimizer is now specified in the config.toml file.
+- Can use AdamW8Bit optimizer.
+- MLP offloading works again. For MoE, can offload a specified number of experts.
+- Can have separate dtype for saved files.
+- Cohere model support (command-r)
 ### 2024-04-07
 Make sure to update requirements! Axolotl does some dynamic importing, so things will break in a very hard to diagnose way if you don't have a new dependency that was added.
 - Removed the need for manually specifying cache directories for datasets. All dataset processing uses the Huggingface Datasets library and takes advantage of the automatic caching that it provides.

@@ -11,6 +11,22 @@ from utils import *
 from kernels.cross_entropy_loss import Fast_CrossEntropyLoss
 
 
+def move_data_to_device(module, device):
+    # handle lora
+    if hasattr(module, 'base_layer'):
+        module = module.base_layer
+    orig_data = module.weight.data
+    module.weight.data = orig_data.to(device, non_blocking=True)
+    return orig_data
+
+
+def set_data(module, data):
+    # handle lora
+    if hasattr(module, 'base_layer'):
+        module = module.base_layer
+    module.weight.data = data
+
+
 def entropy_fn(logits):
     result = []
     # There is a very wide range of chuck sizes that cause no increase in memory reported by

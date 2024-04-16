@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import transformers
 import accelerate
 
-from pipeline_model import PipelineModel, LayerSpec, ComputeMetrics
+from pipeline_model import *
 from utils import DTYPE_MAP
 
 class EmbeddingPipe(nn.Module):
@@ -67,23 +67,7 @@ class LmHeadPipe(nn.Module):
 
     def forward(self, inputs):
         hidden_states, labels = inputs
-        return self.orig(hidden_states)*self.logit_scale, labels
-
-
-def move_data_to_device(module, device):
-    # handle lora
-    if hasattr(module, 'base_layer'):
-        module = module.base_layer
-    orig_data = module.weight.data
-    module.weight.data = orig_data.to(device, non_blocking=True)
-    return orig_data
-
-
-def set_data(module, data):
-    # handle lora
-    if hasattr(module, 'base_layer'):
-        module = module.base_layer
-    module.weight.data = data
+        return self.orig(hidden_states*self.logit_scale), labels
 
 
 class LlamaDecoderLayerPipe(nn.Module):

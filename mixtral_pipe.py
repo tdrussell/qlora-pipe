@@ -5,7 +5,7 @@ import transformers
 import accelerate
 from transformers.models.mixtral import modeling_mixtral
 
-from pipeline_model import PipelineModel, LayerSpec, ComputeMetrics
+from pipeline_model import *
 from utils import DTYPE_MAP
 
 
@@ -52,52 +52,48 @@ class EmbeddingPipe(nn.Module):
         return hidden_states, attention_mask, position_ids, labels
 
 
-def move_data_to_device(module, device):
-    # handle lora
-    if hasattr(module, 'base_layer'):
-        module = module.base_layer
-    orig_data = module.weight.data
-    module.weight.data = orig_data.to(device, non_blocking=True)
+def move_experts_to_device(experts, device, num_experts_to_offload):
+    orig_data = []
+    for i in range(num_experts_to_offload):
+        orig_w1 = move_data_to_device(experts[i].w1, device)
+        orig_w2 = move_data_to_device(experts[i].w2, device)
+        orig_w3 = move_data_to_device(experts[i].w3, device)
+        orig_data.append((orig_w1, orig_w2, orig_w3))
     return orig_data
 
 
-def set_data(module, data):
-    # handle lora
-    if hasattr(module, 'base_layer'):
-        module = module.base_layer
-    module.weight.data = data
+def set_experts_data(experts, orig_data):
+    for i, (orig_w1, orig_w2, orig_w3) in enumerate(orig_data):
+        set_data(experts[i].w1, orig_w1)
+        set_data(experts[i].w2, orig_w2)
+        set_data(experts[i].w3, orig_w3)
 
 
 # TODO: make MLP offloading work (right now it's just copied from LlamaDecoderLayerPipe)
 class MixtralDecoderLayerPipe(nn.Module):
-    def __init__(self, loader_util, orig):
+    def __init__(self, loader_util, orig, num_experts_to_offload):
         super().__init__()
         self.orig = orig
         self.mlp_offloaded_to_cpu = False
+        self.num_experts_to_offload = num_experts_to_offload
         loader_util.load_state_dict_into_module(self)
 
     def forward(self, inputs):
         hidden_states, attention_mask, position_ids, labels = inputs[:4]
         input_router_logits = inputs[4:]
         if self.mlp_offloaded_to_cpu:
-            cpu_up_proj = move_data_to_device(self.orig.mlp.up_proj, hidden_states.device)
-            cpu_down_proj = move_data_to_device(self.orig.mlp.down_proj, hidden_states.device)
-            cpu_gate_proj = move_data_to_device(self.orig.mlp.gate_proj, hidden_states.device)
+            orig_data = move_experts_to_device(self.orig.block_sparse_moe.experts, hidden_states.device, self.num_experts_to_offload)
         hidden_states, router_logits = self.orig(hidden_states, attention_mask=attention_mask, position_ids=position_ids, output_router_logits=True)
         router_logits = router_logits.to(torch.float32)
         router_logits = input_router_logits + (router_logits,)
         result = (hidden_states, attention_mask, position_ids, labels, *router_logits)
         if self.mlp_offloaded_to_cpu:
-            set_data(self.orig.mlp.up_proj, cpu_up_proj)
-            set_data(self.orig.mlp.down_proj, cpu_down_proj)
-            set_data(self.orig.mlp.gate_proj, cpu_gate_proj)
+            set_experts_data(self.orig.block_sparse_moe.experts, orig_data)
         return result
 
     def offload_mlp_to_cpu(self):
         self.mlp_offloaded_to_cpu = True
-        move_data_to_device(self.orig.mlp.up_proj, 'cpu')
-        move_data_to_device(self.orig.mlp.down_proj, 'cpu')
-        move_data_to_device(self.orig.mlp.gate_proj, 'cpu')
+        move_experts_to_device(self.orig.block_sparse_moe.experts, 'cpu', self.num_experts_to_offload)
 
 
 class MixtralRMSNormPipe(nn.Module):
@@ -169,6 +165,9 @@ class MixtralForCausalLMPipe(PipelineModel, transformers.MixtralForCausalLM):
         PipelineModel.__init__(self, config, quantization_config, **kwargs)
         torch.set_default_dtype(torch.float32)
         self.load_balancing_loss_coef = config.get('load_balancing_loss_coef', None)
+        self.num_experts_to_offload = self.num_experts
+        if 'offload_mlp_to_cpu' in config and type(config['offload_mlp_to_cpu']) == int:
+            self.num_experts_to_offload = config['offload_mlp_to_cpu']
 
     def to_layer_specs(self):
         def initial_layer(inputs):
@@ -193,8 +192,8 @@ class MixtralForCausalLMPipe(PipelineModel, transformers.MixtralForCausalLM):
             )
         ]
         for block in self.model.layers:
-            result.append(LayerSpec(MixtralDecoderLayerPipe, self.loader_util, block))
+            result.append(LayerSpec(MixtralDecoderLayerPipe, self.loader_util, block, self.num_experts_to_offload))
         result.append(LayerSpec(MixtralRMSNormPipe, self.loader_util, self.model.norm, _estimated_size=0))
-        result.append(LayerSpec(LmHeadPipe, self.loader_util, self.lm_head))
-        result.append(LayerSpec(MixtralComputeMetrics, self.load_balancing_loss_coef, self.num_experts, self.num_experts_per_tok, focal_loss_gamma=self.focal_loss_gamma))
+        result.append(LayerSpec(LmHeadPipe, self.loader_util, self.lm_head, _estimated_size=0))
+        result.append(LayerSpec(MixtralComputeMetrics, self.load_balancing_loss_coef, self.num_experts, self.num_experts_per_tok, focal_loss_gamma=self.focal_loss_gamma, _estimated_size=0))
         return result

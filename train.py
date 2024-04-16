@@ -127,9 +127,14 @@ def evaluate(model_engine, eval_dataloaders, tb_writer, step, eval_gradient_accu
         tb_writer.add_scalar('eval/eval_time_sec', duration, step)
 
 
+def convert_state_dict_dtype(state_dict, dtype):
+    for key, v in state_dict.items():
+        state_dict[key] = v.to(device='cpu', dtype=DTYPE_MAP[dtype])
+
+
 # TODO: this is pretty hacky. Is there a way to get the state_dict from the lora model directly,
 # but still know which layers the given pipeline parallel stage actually trained?
-def save_lora(model_engine, pipeline_model, lora_config, save_dir, args):
+def save_lora(model_engine, pipeline_model, lora_config, save_dir, args, config):
     dp_id = model_engine.grid.get_data_parallel_rank()
     stage_id = model_engine.grid.get_pipe_parallel_rank()
     tmp_dir = os.path.join(save_dir, 'tmp')
@@ -144,6 +149,8 @@ def save_lora(model_engine, pipeline_model, lora_config, save_dir, args):
                     print(f'WARNING: parameter {name} requires_grad but does not have original_name. Not saving it.')
                     continue
                 partial_state_dict[p.original_name.replace('.default', '').replace('.modules_to_save', '')] = p
+                if 'save_dtype' in config:
+                    convert_state_dict_dtype(partial_state_dict, config['save_dtype'])
         torch.save(partial_state_dict, os.path.join(tmp_dir, f'state_dict_{stage_id}.bin'))
     deepspeed.comm.barrier()
     if dp_id == 0 and stage_id == 0:
@@ -166,6 +173,8 @@ def save_full_model(model_engine, pipeline_model, save_dir, args, config, max_sh
     deepspeed.comm.barrier()
     if dp_id == 0:
         partial_state_dict = {p.original_name: p for p in pipeline_model.parameters()}
+        if 'save_dtype' in config:
+            convert_state_dict_dtype(partial_state_dict, config['save_dtype'])
         torch.save(partial_state_dict, os.path.join(tmp_dir, f'state_dict_{stage_id}.bin'))
     deepspeed.comm.barrier()
     if dp_id == 0 and stage_id == 0:
@@ -203,7 +212,7 @@ def save_model(model_engine, pipeline_model, lora_config, save_dir, args, config
     if lora_config is None:
         save_full_model(model_engine, pipeline_model, save_dir, args, config)
     else:
-        save_lora(model_engine, pipeline_model, lora_config, save_dir, args)
+        save_lora(model_engine, pipeline_model, lora_config, save_dir, args, config)
 
 
 def apply_max_norm_regularization(model, config):
@@ -268,11 +277,8 @@ def one_at_a_time():
         deepspeed.comm.barrier()
 
 
-def load_pipeline_model_with_lora(config):
+def load_pipeline_model_with_lora(config, model_type):
     full_fine_tune = config['full_fine_tune']
-    with open(os.path.join(config['model'], 'config.json')) as f:
-        model_config = json.load(f)
-        model_type = model_config['model_type'] if 'model_type' in model_config else 'llama'
 
     bnb_compute_dtype = DTYPE_MAP[config['bnb_compute_dtype']]
 
@@ -402,7 +408,14 @@ if __name__ == '__main__':
     deepspeed.comm.barrier()
     run_dir = get_most_recent_run_dir(config['output_dir'])
 
+    with open(os.path.join(config['model'], 'config.json')) as f:
+        model_config = json.load(f)
+        model_type = model_config.get('model_type', 'llama')
+
     tokenizer = transformers.AutoTokenizer.from_pretrained(config['model'], local_files_only=True, use_fast=False, add_bos_token=True, add_eos_token=False)
+    # TODO: do we want to do this with cohere models? By default the EOS token is <|END_OF_TURN_TOKEN|>
+    # if model_type == 'cohere':
+    #     tokenizer.eos_token = '<EOS_TOKEN>'
     tokenizer.pad_token = tokenizer.eos_token
 
     train_data, eval_data_map = load_datasets(config, tokenizer)
@@ -436,23 +449,52 @@ if __name__ == '__main__':
         return bnb_cuda_old(self, device)
     bitsandbytes.nn.modules.Params4bit.cuda = bnb_cuda_hijack
 
-    pipeline_model, lora_model, lora_config = load_pipeline_model_with_lora(config)
+    pipeline_model, lora_model, lora_config = load_pipeline_model_with_lora(config, model_type)
 
     parameters_to_train = [p for p in pipeline_model.parameters() if p.requires_grad]
+
+    def get_optimizer(model_parameters):
+        lr = config['optimizer']['lr']
+        optim_type = config['optimizer']['type'].lower()
+        if optim_type == 'adamw':
+            return deepspeed.ops.adam.FusedAdam(
+                model_parameters,
+                lr=lr,
+                betas=(config.get('beta1', 0.9), config.get('beta2', 0.999)),
+                weight_decay=config.get('weight_decay', 0.01)
+            )
+        elif optim_type == 'adamw8bit':
+            return bitsandbytes.optim.AdamW8bit(
+                model_parameters,
+                lr=lr,
+                betas=(config.get('beta1', 0.9), config.get('beta2', 0.999)),
+                weight_decay=config.get('weight_decay', 0.01)
+            )
+        else:
+            raise NotImplementedError(optim_type)
 
     model_engine, optimizer = engine.initialize(
         args=args,
         model=pipeline_model,
         model_parameters=parameters_to_train,
+        optimizer=get_optimizer,
     )
+
+    # TODO: I have recently realized that we are setting things to fp16/bf16, even though all the DS
+    # config was not in fp16 / bf16 mode. DS being in fp16/bf16 changes things in many places, e.g.
+    # it can give you a BF16_Optimizer wrapper that accumulates grads in fp32, the communication dtype
+    # is different, etc. I need to really look through all the implications of this. This change is so
+    # that we keep the normal optimizer, but the communication dtype is changed so that we don't
+    # unnecessarily cast grads to fp32.
+    weight_dtype = DTYPE_MAP[config.get('lora_weight_dtype')]
+    model_engine.communication_data_type = weight_dtype
 
     # TODO: the main DeepSpeedEngine forces all parameters to the GPU, and also does things like
     # broadcast all parameters from data parallel rank 0 to all other ranks. Thus, MLP offloading
     # must come after engine.initialize(). If we want to avoid loading everything onto GPUs only
     # to offload the MLPs, we have to rewrite a lot of code to work around things.
-    if 'offload_mlp_to_cpu' in config and config['offload_mlp_to_cpu']:
+    if config.get('offload_mlp_to_cpu', False):
         assert config['activation_checkpointing']  # MLP offloading only works with activation checkpointing
-        #pipeline_model.offload_mlp_to_cpu()
         for module in pipeline_model.modules():
             if hasattr(module, 'offload_mlp_to_cpu'):
                 module.offload_mlp_to_cpu()
@@ -497,7 +539,7 @@ if __name__ == '__main__':
         load_path, client_state = model_engine.load_checkpoint(
             run_dir,
             load_module_strict=False,
-            load_lr_scheduler_states=True,
+            load_lr_scheduler_states='force_constant_lr' not in config,
             load_optimizer_states=load_optimizer_states
         )
         deepspeed.comm.barrier()  # just so the print below doesn't get swamped
@@ -505,8 +547,6 @@ if __name__ == '__main__':
         train_dataloader.load_state_dict(client_state['custom_loader'])
         step = client_state['step'] + 1
         del client_state
-        gc.collect()
-        torch.cuda.empty_cache()
         # if we skip loading the optimizer states, we need to step the LR scheduler so we start at the right value
         if not load_optimizer_states:
             model_engine.lr_scheduler.step()
@@ -546,6 +586,8 @@ if __name__ == '__main__':
         evaluate(model_engine, eval_dataloaders, tb_writer, 0, eval_gradient_accumulation_steps)
 
     while True:
+        gc.collect()
+        torch.cuda.empty_cache()
         metrics = model_engine.train_batch()
         train_dataloader.sync_epoch()
         if lora_config is not None:

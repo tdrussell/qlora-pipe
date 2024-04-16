@@ -47,6 +47,9 @@ checkpoint_every_n_minutes = 60
 eval_before_first_step = true  # do an eval before any training happens
 bnb_compute_dtype = 'bfloat16'
 lora_weight_dtype = 'bfloat16'
+# Can have the saved weights be different dtype. Don't need to set this. Could be useful for
+# training in float32 but saving with float16.
+#save_dtype = 'bfloat16'
 use_double_quant = false
 
 # sort examples by length before dividing them into batches
@@ -56,8 +59,10 @@ use_double_quant = false
 group_by_length = true
 
 activation_checkpointing = true
-# experimental feature, doesn't currently work
-#offload_mlp_to_cpu = false
+# Keep MLP weights on system RAM until they are needed. Can save a ton of VRAM with a
+# moderate hit to performance. If using an MoE model, this can also be an integer, in
+# which case only that many experts are offloaded (tradeoff between VRAM and speed).
+#offload_mlp_to_cpu = true
 
 # Resume a prior run
 # if true, we attempt to resume training from the most recent directory inside output_dir (the directory names are timestamps)
@@ -82,6 +87,14 @@ dataset_interleave_stopping_strategy = 'all_exhausted'
 # Can set this lower than training, so we don't drop as many examples when trying to make equal-sized batches.
 # Default if not set: same as training GAS.
 eval_gradient_accumulation_steps = 1
+
+[optimizer]
+# AdamW or AdamW8bit
+type = 'AdamW'
+lr = 5e-5
+beta1 = 0.9
+beta2 = 0.99
+weight_decay = 0.1
 
 [[datasets]]
 # Arbitrary name, used only for separately logging eval metrics. Will be dataset0, dataset1, etc if not set.
