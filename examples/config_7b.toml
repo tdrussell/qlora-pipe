@@ -58,7 +58,13 @@ use_double_quant = false
 # you should probably always have this set to true
 group_by_length = true
 
+# This can also be 'unsloth' to offload hidden states to CPU, saving potentially a lot of VRAM
+# for a minor performance hit.
+# Example: 4x4090, PCIE 3.0 16x, pipeline_stages=4, training QLoRA on Llama 3 70B with 4096 sequence length.
+# true: 75s step time, 19.7G peak per-GPU VRAM usage.
+# 'unsloth': 78s step time, 16.2G peak per-GPU VRAM usage.
 activation_checkpointing = true
+
 # Keep MLP weights on system RAM until they are needed. Can save a ton of VRAM with a
 # moderate hit to performance. If using an MoE model, this can also be an integer, in
 # which case only that many experts are offloaded (tradeoff between VRAM and speed).

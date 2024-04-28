@@ -26,6 +26,7 @@ from utils import *
 import engine
 import llama_pipe
 import mixtral_pipe
+import unsloth_utils
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--config', help='Path to TOML configuration file.')
@@ -322,12 +323,16 @@ def load_pipeline_model_with_lora(config, model_type):
 
     partition_method = 'estimated_size'
     if config['activation_checkpointing']:
+        if config['activation_checkpointing'] == 'unsloth':
+            checkpoint_func = unsloth_utils.unsloth_checkpoint
+        else:
+            checkpoint_func = deepspeed.checkpointing.checkpoint
         pipeline_model = engine.CustomPipelineModule(
             layers=layers,
             num_stages=config['pipeline_stages'],
             activation_checkpoint_interval=1,
             checkpointable_layers=checkpointable_layers,
-            activation_checkpoint_func=deepspeed.checkpointing.checkpoint,
+            activation_checkpoint_func=checkpoint_func,
             partition_method=partition_method
         )
     else:
