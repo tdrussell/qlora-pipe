@@ -109,6 +109,10 @@ You can have multiple datasets. Just add additional `[[datasets]]` entries. When
 Sample packing is not currently implemented. Instead, there is the option `batch_size_tokens`. If this field is set, the batch size in the Deepspeed config file is ignored, and instead the batch size is adjusted dynamically to target a fixed number of tokens per batch, per device. This was easier to implement than sample packing, and does basically the same thing. It is also efficient: if I set batch_size_tokens to a modest 10000 and train a 7B model with the Alpaca dataset, all my 4090s hit their 350W power limit cap. Unless I'm missing something (definitely possible), it seems there is no need to support sample packing.
 
 ## Changelog
+### 2024-04-28
+- Add llama3 instruction formatting option when loading a ShareGPT formatted dataset using Axolotl.
+- Automatically add BOS token for Llama 3.
+- Add option for Unsloth activation checkpointing, which saves VRAM for a very small hit to performance.
 ### 2024-04-16
 - Optimizer is now specified in the config.toml file.
 - Can use AdamW8Bit optimizer.
