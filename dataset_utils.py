@@ -45,7 +45,7 @@ def slice_into_chunks(x, sequence_len, overlap=0):
     return result
 
 
-def load_raw_dataset(dataset_path, tokenizer, sequence_len, eval_size, overlap=0, subsample=None):
+def load_raw_dataset(dataset_path, tokenizer, sequence_len, eval_size, overlap=0, subsample_documents=None):
     if dataset_path.endswith('.txt'):
         dataset = datasets.load_dataset('text', data_files=dataset_path, sample_by='document')['train']
     elif dataset_path.endswith('.json') or dataset_path.endswith('.jsonl'):
@@ -55,8 +55,9 @@ def load_raw_dataset(dataset_path, tokenizer, sequence_len, eval_size, overlap=0
     dataset.set_format(type='torch')
 
     num_proc = min(64, os.cpu_count())
-    if subsample:
-        dataset = dataset.shuffle(seed=13).select(list(range(int(subsample*len(dataset)))))
+    if subsample_documents:
+        dataset = dataset.shuffle(seed=13).select(list(range(int(subsample_documents*len(dataset)))))
+
     dataset = dataset.map(lambda x: tokenizer(x['text']), batched=True, batch_size=10, remove_columns=dataset.column_names, desc='tokenizing', num_proc=num_proc)
     # TODO: maybe do it this way instead
     #dataset = dataset.map(lambda x: {'tokens': slice_into_chunks(x['tokens'][0], sequence_len, overlap=overlap)}, batched=True, batch_size=1)
@@ -67,7 +68,7 @@ def load_raw_dataset(dataset_path, tokenizer, sequence_len, eval_size, overlap=0
         train_data = split_datasets['train']
         eval_data = split_datasets['test']
     else:
-        train_data = dataset.shuffle(seed=42)
+        train_data = dataset
         eval_data = None
     return train_data, eval_data
 
@@ -93,11 +94,22 @@ def load_axolotl_dataset(dataset_path, tokenizer, sequence_len, eval_size):
 def load_single_dataset(dataset_path, dataset_type, tokenizer, sequence_len, eval_size, subsample=None):
     if dataset_type in ['textfile', 'doclist']:
         with zero_first(is_main_process()):
-            train_data, eval_data = load_raw_dataset(dataset_path, tokenizer, sequence_len, eval_size, subsample=subsample)
+            train_data, eval_data = load_raw_dataset(dataset_path, tokenizer, sequence_len, eval_size)
     elif dataset_type == 'axolotl':
         train_data, eval_data = load_axolotl_dataset(dataset_path, tokenizer, sequence_len, eval_size)
     else:
         raise NotImplementedError()
+
+    train_data = train_data.shuffle(seed=42)
+    if eval_data is not None:
+        eval_data = eval_data.shuffle(seed=42)
+
+    if subsample is not None:
+        assert 0 < subsample < 1
+        train_data = train_data.select(range(int(len(train_data)*subsample)))
+        if eval_data is not None:
+            eval_data = eval_data.select(range(int(len(eval_data)*subsample)))
+
     def add_length(x): return {'length': len(x['input_ids'])}
     with zero_first(is_main_process()):
         train_data = train_data.map(add_length, desc='adding length field')
