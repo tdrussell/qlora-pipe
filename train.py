@@ -18,6 +18,7 @@ from deepspeed.runtime.pipe.module import LayerSpec
 import toml
 import bitsandbytes
 from safetensors.torch import save_file
+from fastchat.conversation import register_conv_template, Conversation, SeparatorStyle
 
 from dataset_utils import load_datasets
 import dataloader
@@ -390,6 +391,21 @@ def need_to_checkpoint():
 
 
 if __name__ == '__main__':
+    register_conv_template(
+        Conversation(
+            name='llama3',
+            # Make sure to have a default so we always have <|begin_of_text|>.
+            system_message="A chat.",
+            # TODO: why do we need to put <|begin_of_text|> here? I thought that was taken care of
+            # when we override build_inputs_with_special_tokens() below.
+            system_template='<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n{system_message}<|eot_id|>',
+            roles=('<|start_header_id|>user<|end_header_id|>\n\n', '<|start_header_id|>assistant<|end_header_id|>\n\n'),
+            sep_style=SeparatorStyle.NO_COLON_SINGLE,
+            sep='<|eot_id|>',
+            stop_token_ids=[128001, 128009],
+        )
+    )
+
     # TODO: if resuming from checkpoint, probably should read all config files from checkpoint dir
     # rather than assume they are unchanged on the command line
     with open(args.config) as f:
@@ -412,17 +428,31 @@ if __name__ == '__main__':
         model_config = json.load(f)
         model_type = model_config.get('model_type', 'llama')
 
-    tokenizer = transformers.AutoTokenizer.from_pretrained(config['model'], local_files_only=True, use_fast=False, add_bos_token=True, add_eos_token=False)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(config['model'], local_files_only=True)
     # TODO: do we want to do this with cohere models? By default the EOS token is <|END_OF_TURN_TOKEN|>
     # if model_type == 'cohere':
     #     tokenizer.eos_token = '<EOS_TOKEN>'
     tokenizer.pad_token = tokenizer.eos_token
+
+    # some tokenizers don't have any way to automatically add BOS via configuration alone
+    def build_inputs_with_special_tokens(self, token_ids_0, token_ids_1=None):
+        bos_token_id = [self.bos_token_id]
+
+        output = bos_token_id + token_ids_0
+
+        if token_ids_1 is not None:
+            output = output + bos_token_id + token_ids_1
+
+        return output
+    tokenizer.build_inputs_with_special_tokens = build_inputs_with_special_tokens
 
     train_data, eval_data_map = load_datasets(config, tokenizer)
 
     if args.debug_dataset:
         if is_main_process():
             for i, item in enumerate(iter(train_data)):
+                print('input_ids:')
+                print(item['input_ids'])
                 print('decoded input_ids:')
                 print(tokenizer.decode(item['input_ids']))
                 print('attention_mask:')
