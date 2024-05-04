@@ -1,0 +1,6 @@
+datasets:
+  - path: HuggingFaceH4/ultrafeedback_binarized
+    split: train_prefs
+    type: orpo.chat_template
+    # Can be an Axolotl chat template, or 'llama3' (added via monkeypatch)
+    chat_template: llama3

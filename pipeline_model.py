@@ -1,7 +1,9 @@
 import os
+from collections import deque
 
 import torch
 from torch import nn
+import torch.nn.functional as F
 import transformers
 from deepspeed.accelerator import get_accelerator
 from transformers.integrations import get_keys_to_not_convert, replace_with_bnb_linear
@@ -62,48 +64,16 @@ class LayerSpec(ds_pipe_module.LayerSpec):
         return self.module_kwargs.get('_estimated_size', 1)
 
 
-class ComputeMetrics(nn.Module):
-    def __init__(self, focal_loss_gamma=0):
-        super().__init__()
-        self.focal_loss_gamma = focal_loss_gamma
-
-    def forward(self, inputs):
-        logits, labels = inputs
-        shift_logits = logits
-        extra_ignored_labels = torch.full((labels.shape[0], 1), -100, device=logits.device)
-        shift_labels = torch.hstack((labels[..., 1:], extra_ignored_labels))
-        # Flatten the tokens
-        vocab_size = shift_logits.size(-1)
-        shift_logits = shift_logits.view(-1, vocab_size)
-        shift_labels = shift_labels.view(-1)
-        # Enable model parallelism
-        shift_labels = shift_labels.to(shift_logits.device)
-
-        loss_unreduced = Fast_CrossEntropyLoss.apply(shift_logits, shift_labels)
-
-        valid_loss = (shift_labels >= 0)
-        loss_unreduced = loss_unreduced[valid_loss]
-        optimized_loss_unreduced = loss_unreduced
-
-        # focal loss
-        if (self.focal_loss_gamma > 0):
-            p = torch.exp(-optimized_loss_unreduced)
-            optimized_loss_unreduced = (1-p)**self.focal_loss_gamma * optimized_loss_unreduced
-
-        with torch.no_grad():
-            accuracies = top_k_accuracy(shift_logits, shift_labels, k_list=[1, 5, 20])
-            entropy = entropy_fn(shift_logits)[valid_loss]
-        loss = optimized_loss_unreduced.mean()
-        loss_unreduced = loss_unreduced.detach()
-        return loss, loss_unreduced, entropy, *accuracies
-
-
 class PipelineModel(nn.Module):
 
     def __init__(self, config, quantization_config):
         self.train_config = config
         self.loader_util = LoaderUtil(config['model'])
         self.focal_loss_gamma = config.get('focal_loss_gamma', 0)
+        self.dpo = False
+        self.dpo_phase = 1
+        self.chosen_logps = deque()
+        self.rejected_logps = deque()
         if self.focal_loss_gamma > 0 and is_main_process():
             print(f'Using focal loss with gamma={self.focal_loss_gamma}')
 
@@ -124,6 +94,76 @@ class PipelineModel(nn.Module):
     # need to override this method
     def to_layer_specs(self):
         raise NotImplementedError()
+
+    def compute_metrics(self, inputs):
+        logits, labels = inputs
+        labels = labels.to(logits.device)
+        extra_ignored_labels = torch.full((labels.shape[0], 1), -100, device=logits.device)
+        labels = torch.hstack((labels[..., 1:], extra_ignored_labels))
+        # Flatten the tokens
+        vocab_size = logits.size(-1)
+        flat_logits = logits.view(-1, vocab_size)
+        flat_labels = labels.view(-1)
+
+        raw_loss = Fast_CrossEntropyLoss.apply(flat_logits, flat_labels)
+
+        if not self.dpo:
+            flat_loss_mask = (flat_labels >= 0)
+            flat_loss_unreduced = raw_loss[flat_loss_mask]
+            optimized_loss_unreduced = flat_loss_unreduced
+            # focal loss
+            if (self.focal_loss_gamma > 0):
+                p = torch.exp(-optimized_loss_unreduced)
+                optimized_loss_unreduced = (1-p)**self.focal_loss_gamma * optimized_loss_unreduced
+            loss = optimized_loss_unreduced.mean()
+        else:
+            loss_unreduced = raw_loss.view_as(labels)
+            loss_mask = (labels >= 0)
+            logps = -(loss_unreduced * loss_mask).sum(-1)
+            half = loss_unreduced.size(0) // 2
+            chosen_logps = logps[:half]
+            rejected_logps = logps[half:]
+
+            # log the language modeling loss metrics on the chosen completion
+            flat_loss_unreduced = loss_unreduced[:half].flatten()[loss_mask[:half].flatten()]
+            flat_logits = logits[:half].view(-1, vocab_size)
+            flat_labels = labels[:half].view(-1)
+            flat_loss_mask = (flat_labels >= 0)
+
+            if self.dpo_phase == 1:
+                self.chosen_logps.append(chosen_logps.detach())
+                self.rejected_logps.append(rejected_logps.detach())
+                loss = torch.tensor(0., device=logits.device)
+            else:
+                policy_chosen_logps = chosen_logps
+                policy_rejected_logps = rejected_logps
+                pi_logratios = policy_chosen_logps - policy_rejected_logps
+                if self.dpo_reference_free:
+                    ref_logratios = torch.tensor([0], dtype=pi_logratios.dtype, device=pi_logratios.device)
+                else:
+                    reference_chosen_logps = self.chosen_logps.popleft()
+                    reference_rejected_logps = self.rejected_logps.popleft()
+                    ref_logratios = reference_chosen_logps - reference_rejected_logps
+                dpo_logits = pi_logratios - ref_logratios
+                loss = -F.logsigmoid(self.dpo_beta * dpo_logits).mean()
+
+        with torch.no_grad():
+            accuracies = top_k_accuracy(flat_logits, flat_labels, k_list=[1, 5, 20])
+            entropy = entropy_fn(flat_logits)[flat_loss_mask]
+
+        return loss, flat_loss_unreduced.detach(), entropy, *accuracies
+
+    def configure_dpo(self, beta, reference_free=False):
+        self.dpo = True
+        self.dpo_beta = beta
+        self.dpo_reference_free = reference_free
+        self.dpo_phase = 2
+
+    def set_dpo_phase1(self):
+        self.dpo_phase = 1
+
+    def set_dpo_phase2(self):
+        self.dpo_phase = 2
 
 
 class LoaderUtil:

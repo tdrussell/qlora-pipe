@@ -1,0 +1,49 @@
+# Paths
+model = '/data2/models/Meta-Llama-3-8B-Instruct'
+output_dir = '/data/training_runs/llama3_8b_dpo_example'
+
+load_in_4bit = true
+lora_rank = 64
+lora_alpha = 64
+lora_dropout = 0.05
+
+# Do DPO training.
+dpo = true
+dpo_beta = 0.2
+# I don't know if this is useful, but TRL implements it so I did too. False by default (i.e. standard DPO).
+#dpo_reference_free = true
+
+epochs = 2
+lr_scheduler = 'cosine'
+warmup_steps = 100
+
+batch_size_tokens = 5000
+
+pipeline_stages = 1
+logging_steps = 10
+eval_steps = 100
+save_steps = 200
+checkpoint_every_n_minutes = 60
+eval_before_first_step = true
+bnb_compute_dtype = 'bfloat16'
+lora_weight_dtype = 'bfloat16'
+use_double_quant = false
+
+group_by_length = true
+activation_checkpointing = true
+
+resume_from_checkpoint = false
+
+[optimizer]
+type = 'AdamW'
+lr = 5e-5
+beta1 = 0.9
+beta2 = 0.99
+weight_decay = 0.1
+
+[[datasets]]
+name = 'ultrafeedback'
+dataset_type = 'axolotl'
+dataset_path = 'examples/ultrafeedback.yml'
+sequence_len = 4096
+eval_size = 0.01

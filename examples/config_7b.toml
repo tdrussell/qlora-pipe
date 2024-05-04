@@ -1,6 +1,6 @@
 # Paths
-model = '/data/models/Mistral-7B-v0.1'
-output_dir = '/home/anon/training_runs/mistral_7b_example'
+model = '/data2/models/Mistral-7B-v0.1'
+output_dir = '/data/training_runs/mistral_7b_example'
 
 # Lora configuration
 # can use full_fine_tune=true and load_in_4bit=false to train the whole model instead of a LoRA

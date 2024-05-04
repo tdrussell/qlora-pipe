@@ -96,13 +96,24 @@ def write_metrics(tb_writer, prefix, metrics, step):
         tb_writer.add_scalar(f'{prefix}/alternate_load_balancing_loss', metrics[7].mean().item(), step)
 
 
-def evaluate_single(model_engine, name, eval_dataloader, tb_writer, step, eval_gradient_accumulation_steps):
+def dpo_phase1_step(model_engine, model, lora_model, wrapped_dataloader):
+    lora_model.disable_adapter_layers()
+    model.set_dpo_phase1()
+    model_engine.eval_batch(iter(wrapped_dataloader))
+    lora_model.enable_adapter_layers()
+    model.set_dpo_phase2()
+
+
+def evaluate_single(model_engine, model, lora_model, name, eval_dataloader, tb_writer, step, eval_gradient_accumulation_steps, do_dpo_phase1):
     orig_micro_batches = model_engine.micro_batches
     model_engine.micro_batches = eval_gradient_accumulation_steps
-    iterator = iter(eval_dataloader)
+    wrapped_dataloader = dataloader.PipelineDataLoaderWrapper(eval_dataloader)
     all_metrics = None
     while True:
-        metrics = model_engine.eval_batch(iterator)
+        wrapped_dataloader.advance()
+        if do_dpo_phase1:
+            dpo_phase1_step(model_engine, model, lora_model, wrapped_dataloader)
+        metrics = model_engine.eval_batch(iter(wrapped_dataloader))
         eval_dataloader.sync_epoch()
         if all_metrics is None:
             all_metrics = [[] for _ in range(len(metrics))]
@@ -118,12 +129,12 @@ def evaluate_single(model_engine, name, eval_dataloader, tb_writer, step, eval_g
         write_metrics(tb_writer, f'eval/{name}', eval_metrics, step)
 
 
-def evaluate(model_engine, eval_dataloaders, tb_writer, step, eval_gradient_accumulation_steps):
+def evaluate(model_engine, model, lora_model, eval_dataloaders, tb_writer, step, eval_gradient_accumulation_steps, do_dpo_phase1):
     if is_main_process():
         print('Running eval')
     start = time.time()
     for name, eval_dataloader in eval_dataloaders.items():
-        evaluate_single(model_engine, name, eval_dataloader, tb_writer, step, eval_gradient_accumulation_steps)
+        evaluate_single(model_engine, model, lora_model, name, eval_dataloader, tb_writer, step, eval_gradient_accumulation_steps, do_dpo_phase1)
     duration = time.time() - start
     if is_main_process():
         tb_writer.add_scalar('eval/eval_time_sec', duration, step)
@@ -312,6 +323,9 @@ def load_pipeline_model_with_lora(config, model_type):
     else:
         raise NotImplementedError()
 
+    if config.get('dpo', False):
+        model.configure_dpo(config['dpo_beta'], config.get('dpo_reference_free', False))
+
     # CAREFUL! The "primary" layers of the model have to have 'decoderlayer' in them for
     # activation checkpointing to automatically work correctly.
     layers = model.to_layer_specs()
@@ -375,7 +389,7 @@ def load_pipeline_model_with_lora(config, model_type):
         for name, p in lora_model.named_parameters():
             p.original_name = name
 
-    return pipeline_model, lora_model, lora_config
+    return pipeline_model, model, lora_model, lora_config
 
 
 last_checkpoint_time = None
@@ -464,6 +478,15 @@ if __name__ == '__main__':
                 print(item['attention_mask'])
                 print('labels:')
                 print(item['labels'])
+                if 'rejected_input_ids' in item:
+                    print('input_ids:')
+                    print(item['rejected_input_ids'])
+                    print('decoded rejected_input_ids:')
+                    print(tokenizer.decode(item['rejected_input_ids']))
+                    print('rejected_attention_mask:')
+                    print(item['rejected_attention_mask'])
+                    print('rejected_labels:')
+                    print(item['rejected_labels'])
                 print('-'*80)
                 if i >= args.debug_dataset-1:
                     break
@@ -484,7 +507,7 @@ if __name__ == '__main__':
         return bnb_cuda_old(self, device)
     bitsandbytes.nn.modules.Params4bit.cuda = bnb_cuda_hijack
 
-    pipeline_model, lora_model, lora_config = load_pipeline_model_with_lora(config, model_type)
+    pipeline_model, model, lora_model, lora_config = load_pipeline_model_with_lora(config, model_type)
 
     parameters_to_train = [p for p in pipeline_model.parameters() if p.requires_grad]
 
@@ -545,7 +568,7 @@ if __name__ == '__main__':
         group_by_length=False if 'group_by_length' not in config else config['group_by_length'],
         batch_size_tokens=None if 'batch_size_tokens' not in config else config['batch_size_tokens'],
     )
-    model_engine.set_dataloader(train_dataloader)
+    wrapped_train_dataloader = dataloader.PipelineDataLoaderWrapper(train_dataloader)
 
     steps_per_epoch = len(train_dataloader) // model_engine.gradient_accumulation_steps()
 
@@ -616,14 +639,21 @@ if __name__ == '__main__':
 
     tb_writer = SummaryWriter(log_dir=run_dir) if is_main_process() else None
 
+    do_dpo_phase1 = config.get('dpo', False) and not config.get('dpo_reference_free', False)
+
     epoch = train_dataloader.epoch
     if config['eval_before_first_step'] and not config['resume_from_checkpoint']:
-        evaluate(model_engine, eval_dataloaders, tb_writer, 0, eval_gradient_accumulation_steps)
+        evaluate(model_engine, model, lora_model, eval_dataloaders, tb_writer, 0, eval_gradient_accumulation_steps, do_dpo_phase1)
 
     while True:
         gc.collect()
         torch.cuda.empty_cache()
-        metrics = model_engine.train_batch()
+        wrapped_train_dataloader.advance()
+
+        if do_dpo_phase1:
+            dpo_phase1_step(model_engine, model, lora_model, wrapped_train_dataloader)
+        metrics = model_engine.train_batch(iter(wrapped_train_dataloader))
+
         train_dataloader.sync_epoch()
         if lora_config is not None:
             keys_scaled, avg_norm, max_norm, norms = apply_max_norm_regularization(pipeline_model, config)
@@ -660,7 +690,7 @@ if __name__ == '__main__':
             save_model(model_engine, pipeline_model, lora_config, f'{run_dir}/step{step}', args, config)
 
         if step % config['eval_steps'] == 0:
-            evaluate(model_engine, eval_dataloaders, tb_writer, step, eval_gradient_accumulation_steps)
+            evaluate(model_engine, model, lora_model, eval_dataloaders, tb_writer, step, eval_gradient_accumulation_steps, do_dpo_phase1)
 
         if need_to_checkpoint():
             model_engine.save_checkpoint(

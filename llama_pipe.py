@@ -135,7 +135,7 @@ class LlamaForCausalLMPipe(PipelineModel, transformers.LlamaForCausalLM):
             result.append(LayerSpec(LlamaDecoderLayerPipe, self.loader_util, block))
         result.append(LayerSpec(LlamaRMSNormPipe, self.loader_util, self.model.norm, _estimated_size=0))
         result.append(LayerSpec(LmHeadPipe, self.loader_util, self.lm_head))
-        result.append(LayerSpec(ComputeMetrics, focal_loss_gamma=self.focal_loss_gamma))
+        result.append(self.compute_metrics)
         return result
 
 
@@ -174,7 +174,7 @@ class Qwen2ForCausalLMPipe(PipelineModel, transformers.Qwen2ForCausalLM):
             result.append(LayerSpec(LlamaDecoderLayerPipe, self.loader_util, block))
         result.append(LayerSpec(LlamaRMSNormPipe, self.loader_util, self.model.norm, _estimated_size=0))
         result.append(LayerSpec(LmHeadPipe, self.loader_util, self.lm_head))
-        result.append(LayerSpec(ComputeMetrics, focal_loss_gamma=self.focal_loss_gamma))
+        result.append(self.compute_metrics)
         return result
 
 class CohereForCausalLMPipe(PipelineModel, transformers.CohereForCausalLM):
@@ -224,5 +224,5 @@ class CohereForCausalLMPipe(PipelineModel, transformers.CohereForCausalLM):
             tie_weights='model.embed_tokens.weight',
             _estimated_size=embedding_relative_size
         ))
-        result.append(LayerSpec(ComputeMetrics, focal_loss_gamma=self.focal_loss_gamma))
+        result.append(self.compute_metrics)
         return result

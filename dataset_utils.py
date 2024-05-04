@@ -8,10 +8,26 @@ import torch
 import datasets
 from axolotl.utils.dict import DictDefault
 from axolotl.utils.data import prepare_dataset
+from axolotl.utils import chat_templates
 from tqdm import tqdm
 import yaml
 
 from utils import *
+
+
+chat_templates_original = chat_templates.chat_templates
+def chat_templates_monkeypatch(user_choice):
+    additional_templates = {
+        'llama3': "{% set loop_messages = messages %}{% for message in loop_messages %}{% set content = '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n'+ message['content'] | trim + '<|eot_id|>' %}{% if loop.index0 == 0 %}{% set content = bos_token + content %}{% endif %}{{ content }}{% endfor %}{% if add_generation_prompt %}{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}{% endif %}"
+    }
+    try:
+        return chat_templates_original(user_choice)
+    except ValueError:
+        if user_choice in additional_templates:
+            return additional_templates[user_choice]
+    raise ValueError(f"Template '{user_choice}' not found.")
+
+chat_templates.chat_templates = chat_templates_monkeypatch
 
 
 def yield_sequences_from_token_batch(tokenizer, token_batch, sequence_len):
@@ -110,11 +126,22 @@ def load_single_dataset(dataset_path, dataset_type, tokenizer, sequence_len, eva
         if eval_data is not None:
             eval_data = eval_data.select(range(int(len(eval_data)*subsample)))
 
-    def add_length(x): return {'length': len(x['input_ids'])}
+    num_proc = min(64, os.cpu_count())
+    def add_length(x):
+        length = len(x['input_ids'])
+        if 'rejected_input_ids' in x:
+            length = max(length, len(x['rejected_input_ids']))
+        return {'length': length}
     with zero_first(is_main_process()):
-        train_data = train_data.map(add_length, desc='adding length field')
+        train_data = train_data.map(add_length, desc='adding length field', num_proc=num_proc)
         if eval_data is not None:
-            eval_data = eval_data.map(add_length, desc='adding length field')
+            eval_data = eval_data.map(add_length, desc='adding length field', num_proc=num_proc)
+
+    if 'prompt_attention_mask' in train_data.column_names:
+        train_data = train_data.remove_columns('prompt_attention_mask')
+        if eval_data is not None:
+            eval_data = eval_data.remove_columns('prompt_attention_mask')
+
     if is_main_process():
         print(f'train_data size: {len(train_data)}')
         if eval_data is not None:
@@ -195,11 +222,17 @@ if __name__ == '__main__':
     import transformers
     # from datasets import disable_caching
     # disable_caching()
-
     tokenizer = transformers.AutoTokenizer.from_pretrained(sys.argv[1], local_files_only=True, use_fast=False, legacy=True)
-    tokenizer.pad_token_id = 0
-    tokenizer.padding_side = 'right'
-    train_data1, eval_data1 = load_raw_dataset('/home/anon/data/test/txt/*.txt', tokenizer, 100, 0.5)
-    train_data2, eval_data2 = load_raw_dataset('/home/anon/data/test/json/*.jsonl', tokenizer, 100, 0.5)
-    print(len(train_data1))
-    print(len(train_data2))
+    tokenizer.pad_token = tokenizer.eos_token
+
+    # train_data1, eval_data1 = load_raw_dataset('/home/anon/data/test/txt/*.txt', tokenizer, 100, 0.5)
+    # train_data2, eval_data2 = load_raw_dataset('/home/anon/data/test/json/*.jsonl', tokenizer, 100, 0.5)
+    # print(len(train_data1))
+    # print(len(train_data2))
+
+    train_data, _ = load_single_dataset('/home/anon/code/qlora-pipe-configs/ultrafeedback.yml', 'axolotl', tokenizer, 4096, 0)
+    print(len(train_data))
+    print(train_data[0])
+    print(tokenizer.decode(train_data[0]['input_ids']))
+    print()
+    print(tokenizer.decode(train_data[0]['rejected_input_ids']))

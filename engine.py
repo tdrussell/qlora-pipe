@@ -44,12 +44,15 @@ def initialize(args=None,
 class CustomPipelineEngine(PipelineEngine):
 
 
-    def train_batch(self):
+    def train_batch(self, data_iter=None):
         if not torch._C.is_grad_enabled():
             raise RuntimeError(f'train_batch() requires gradients enabled. Use eval_batch() instead.')
 
         # sequence length may change between macro batches (but not between gradient accumulation steps)
         self.reset_activation_shape()
+
+        if data_iter is not None:
+            self.set_dataiterator(data_iter)
 
         self.module.train()
         self._compute_loss = True

@@ -133,28 +133,6 @@ def load_balancing_loss_func(gate_logits: torch.Tensor, num_experts: torch.Tenso
     return torch.mean(tokens_per_layer_and_expert * router_prob_per_layer_and_expert) * num_experts**2
 
 
-class MixtralComputeMetrics(ComputeMetrics):
-    def __init__(self, load_balancing_loss_coef, num_experts, num_experts_per_tok, **kwargs):
-        super().__init__(**kwargs)
-        self.load_balancing_loss_coef = load_balancing_loss_coef
-        self.num_experts = num_experts
-        self.num_experts_per_tok = num_experts_per_tok
-
-    def forward(self, inputs):
-        logits, labels, *router_logits = inputs
-        router_logits = tuple(router_logits)
-        metrics = super().forward((logits, labels))
-        if self.load_balancing_loss_coef is not None:
-            aux_loss = modeling_mixtral.load_balancing_loss_func(
-                router_logits, self.num_experts, self.num_experts_per_tok
-            )
-            alternate_aux_loss = load_balancing_loss_func(router_logits, self.num_experts, self.num_experts_per_tok)
-            loss = metrics[0]
-            loss += self.load_balancing_loss_coef * aux_loss
-            metrics = (loss, *metrics[1:], aux_loss, alternate_aux_loss)
-        return metrics
-
-
 class MixtralForCausalLMPipe(PipelineModel, transformers.MixtralForCausalLM):
     def __init__(self, config, quantization_config, **kwargs):
         model_config = transformers.MixtralConfig.from_pretrained(config['model'])
@@ -168,6 +146,20 @@ class MixtralForCausalLMPipe(PipelineModel, transformers.MixtralForCausalLM):
         self.num_experts_to_offload = self.num_experts
         if 'offload_mlp_to_cpu' in config and type(config['offload_mlp_to_cpu']) == int:
             self.num_experts_to_offload = config['offload_mlp_to_cpu']
+
+    def compute_metrics(self, inputs):
+        logits, labels, *router_logits = inputs
+        router_logits = tuple(router_logits)
+        metrics = super().compute_metrics((logits, labels))
+        if self.load_balancing_loss_coef is not None:
+            aux_loss = modeling_mixtral.load_balancing_loss_func(
+                router_logits, self.num_experts, self.num_experts_per_tok
+            )
+            alternate_aux_loss = load_balancing_loss_func(router_logits, self.num_experts, self.num_experts_per_tok)
+            loss = metrics[0]
+            loss += self.load_balancing_loss_coef * aux_loss
+            metrics = (loss, *metrics[1:], aux_loss, alternate_aux_loss)
+        return metrics
 
     def to_layer_specs(self):
         def initial_layer(inputs):
@@ -195,5 +187,5 @@ class MixtralForCausalLMPipe(PipelineModel, transformers.MixtralForCausalLM):
             result.append(LayerSpec(MixtralDecoderLayerPipe, self.loader_util, block, self.num_experts_to_offload))
         result.append(LayerSpec(MixtralRMSNormPipe, self.loader_util, self.model.norm, _estimated_size=0))
         result.append(LayerSpec(LmHeadPipe, self.loader_util, self.lm_head, _estimated_size=0))
-        result.append(LayerSpec(MixtralComputeMetrics, self.load_balancing_loss_coef, self.num_experts, self.num_experts_per_tok, focal_loss_gamma=self.focal_loss_gamma, _estimated_size=0))
+        result.append(self.compute_metrics)
         return result

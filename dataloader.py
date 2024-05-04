@@ -25,6 +25,21 @@ def split_batch(batch, pieces):
     split_examples = zip(*(torch.split(tensor, split_size) for tensor in example_tuple))
     return [(ex, None) for ex in split_examples]
 
+
+# Merge lists a and b, such that for each contiguous piece in the result, the first half comes from
+# a and the second half from b. Used for DPO. The splitting must match how split_batch() does it.
+def combine_piecewise(a, b, pieces):
+    assert len(a) == len(b)
+    split_size = len(a) // pieces
+    a_chunks = [a[i:i+split_size] for i in range(0, len(a), split_size)]
+    b_chunks = [b[i:i+split_size] for i in range(0, len(b), split_size)]
+    result = []
+    for a_chunk, b_chunk in zip(a_chunks, b_chunks):
+        result.extend(a_chunk)
+        result.extend(b_chunk)
+    return result
+
+
 # A distributed batch sampler that supports grouping by length
 class DistributedBatchSamper(torch.utils.data.Sampler):
     def __init__(self, dataset, batch_size, num_replicas, rank, batch_size_multiplier=1, shuffle=True, group_by_length=False, seed=0, drop_last=False, batch_size_tokens=None):
@@ -159,12 +174,12 @@ class PipelineDataLoader:
 
     def __next__(self):
         try:
-            macro_batch = next(self.data)
+            batch = next(self.data)
         except StopIteration:
             self._create_dataloader()
-            macro_batch = next(self.data)
+            batch = next(self.data)
             self.epoch += 1
-        return macro_batch
+        return batch
 
     def _pull_batches_from_dataloader(self):
         for macro_batch in self.dataloader:
@@ -175,6 +190,17 @@ class PipelineDataLoader:
     def _create_dataloader(self):
         data_collator = DataCollatorForSeq2Seq(self.tokenizer, pad_to_multiple_of=self.pad_to_multiple_of)
         def collate_fn(examples):
+            rejected_examples = []
+            for example in examples:
+                del example['length']
+                rejected_example = {}
+                for key in list(example.keys()):
+                    if 'rejected_' in key:
+                        rejected_example[key.strip('rejected_')] = example.pop(key)
+                if rejected_example:
+                    rejected_examples.append(rejected_example)
+            if rejected_examples:
+                examples = combine_piecewise(examples, rejected_examples, self.gradient_accumulation_steps)
             batch = data_collator(examples)
             # input to pipeline is (input_ids, attention_mask, labels)
             # this needs to return (features, labels)
@@ -213,6 +239,22 @@ class PipelineDataLoader:
         for epoch in result:
             max_epoch = max(epoch, max_epoch)
         self.epoch = max_epoch
+
+
+# Simple wrapper for PipelineDataLoader that allows for manually advancing to the next
+# macro batch. If advance() is not called, it will iterate over the same
+# gradient_accumulation_steps microbatches next time. Used for DPO.
+class PipelineDataLoaderWrapper:
+    def __init__(self, dataloader):
+        self.dataloader = dataloader
+
+    def __iter__(self):
+        return iter(self.data)
+
+    def advance(self):
+        self.data = []
+        for _ in range(self.dataloader.gradient_accumulation_steps):
+            self.data.append(next(self.dataloader))
 
 
 # for testing
