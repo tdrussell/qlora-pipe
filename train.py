@@ -489,21 +489,22 @@ if __name__ == '__main__':
     parameters_to_train = [p for p in pipeline_model.parameters() if p.requires_grad]
 
     def get_optimizer(model_parameters):
-        lr = config['optimizer']['lr']
-        optim_type = config['optimizer']['type'].lower()
+        optim_config = config['optimizer']
+        lr = optim_config['lr']
+        optim_type = optim_config['type'].lower()
         if optim_type == 'adamw':
             return deepspeed.ops.adam.FusedAdam(
                 model_parameters,
                 lr=lr,
-                betas=(config.get('beta1', 0.9), config.get('beta2', 0.999)),
-                weight_decay=config.get('weight_decay', 0.01)
+                betas=(optim_config.get('beta1', 0.9), optim_config.get('beta2', 0.999)),
+                weight_decay=optim_config.get('weight_decay', 0.01)
             )
         elif optim_type == 'adamw8bit':
             return bitsandbytes.optim.AdamW8bit(
                 model_parameters,
                 lr=lr,
-                betas=(config.get('beta1', 0.9), config.get('beta2', 0.999)),
-                weight_decay=config.get('weight_decay', 0.01)
+                betas=(optim_config.get('beta1', 0.9), optim_config.get('beta2', 0.999)),
+                weight_decay=optim_config.get('weight_decay', 0.01)
             )
         else:
             raise NotImplementedError(optim_type)
