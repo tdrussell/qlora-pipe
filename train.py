@@ -399,11 +399,7 @@ if __name__ == '__main__':
     register_conv_template(
         Conversation(
             name='llama3',
-            # Make sure to have a default so we always have <|begin_of_text|>.
-            system_message="A chat.",
-            # TODO: why do we need to put <|begin_of_text|> here? I thought that was taken care of
-            # when we override build_inputs_with_special_tokens() below.
-            system_template='<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n{system_message}<|eot_id|>',
+            system_template='<|start_header_id|>system<|end_header_id|>\n\n{system_message}<|eot_id|>',
             roles=('<|start_header_id|>user<|end_header_id|>\n\n', '<|start_header_id|>assistant<|end_header_id|>\n\n'),
             sep_style=SeparatorStyle.NO_COLON_SINGLE,
             sep='<|eot_id|>',
@@ -438,18 +434,6 @@ if __name__ == '__main__':
     # if model_type == 'cohere':
     #     tokenizer.eos_token = '<EOS_TOKEN>'
     tokenizer.pad_token = tokenizer.eos_token
-
-    # some tokenizers don't have any way to automatically add BOS via configuration alone
-    def build_inputs_with_special_tokens(self, token_ids_0, token_ids_1=None):
-        bos_token_id = [self.bos_token_id]
-
-        output = bos_token_id + token_ids_0
-
-        if token_ids_1 is not None:
-            output = output + bos_token_id + token_ids_1
-
-        return output
-    tokenizer.build_inputs_with_special_tokens = build_inputs_with_special_tokens
 
     train_data, eval_data_map = load_datasets(config, tokenizer)
 
