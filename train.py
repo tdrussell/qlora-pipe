@@ -453,6 +453,16 @@ if __name__ == '__main__':
 
     train_data, eval_data_map = load_datasets(config, tokenizer)
 
+    if is_main_process():
+        # Warn if eval dataset is unusually large compared to the eval steps
+        eval_data_length = sum([len(eval_data) for eval_data in eval_data_map.values()])
+        # Expect <=15% of our time spent evaluating vs training
+        time_spent_evaling = eval_data_length / (eval_data_length + config['eval_steps'])
+        if time_spent_evaling > 0.15:
+            print(f'WARNING: eval dataset is unusually large compared to eval_steps. eval_data_length: {eval_data_length}, eval_steps: {config["eval_steps"]}; we will be spending approximately {time_spent_evaling*100:.2f}% of our time evaluating. Lowering eval_size and/or bumping eval_steps is recommended.')
+        else:
+            print(f'eval_data_length: {eval_data_length}, eval_steps: {config["eval_steps"]}; we will be spending approximately {time_spent_evaling*100:.2f}% of our time evaluating.')
+
     if args.debug_dataset:
         if is_main_process():
             for i, item in enumerate(iter(train_data)):
