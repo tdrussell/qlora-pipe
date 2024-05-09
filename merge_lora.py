@@ -10,6 +10,8 @@ import torch
 import safetensors
 import peft
 
+from tqdm import tqdm
+
 input_path, lora_path, output_path = [Path(x) for x in sys.argv[1:]]
 os.makedirs(output_path, exist_ok=True)
 
@@ -29,13 +31,22 @@ def find_lora_weights(key):
                 lora_B = lora_weight
             else:
                 raise RuntimeError()
-    assert not ((lora_A == None) ^ (lora_B == None))
+    assert not ((lora_A is None) ^ (lora_B is None))
     return lora_A, lora_B
 
-print('Merging and copying state_dict to output')
-copy_skip = []
+shards = []
 for shard in input_path.glob('model*.safetensors'):
-    copy_skip.append(shard)
+    shards.append(shard)
+
+print('Copying unmergable files to output')
+for filepath in input_path.glob('*'):
+    if filepath in shards:
+        continue
+    print(f'copying {Path(filepath).name} to output')
+    shutil.copy(filepath, output_path)
+
+print('Merging and copying state_dict to output')
+for shard in (pbar := tqdm(shards)):
     tensors = {}
     with safetensors.safe_open(shard, framework='pt', device='cuda') as f:
         metadata = f.metadata()
@@ -43,16 +54,9 @@ for shard in input_path.glob('model*.safetensors'):
             tensor = f.get_tensor(key)
             lora_A, lora_B = find_lora_weights(key)
             if lora_A is not None:
-                print(f'found lora weights for {key}: {lora_A.size()}, {lora_B.size()}')
+                pbar.set_description(f'found lora weights for {key}: {lora_A.size()}, {lora_B.size()}')
                 delta = (lora_B @ lora_A) * scale
                 delta = delta.to(tensor.dtype)
                 tensor += delta
             tensors[key] = tensor
         safetensors.torch.save_file(tensors, output_path / shard.name, metadata=metadata)
-
-print('Copying other files to output')
-for filepath in input_path.glob('*'):
-    if filepath in copy_skip:
-        continue
-    print(f'copying {Path(filepath).name} to output')
-    shutil.copy(filepath, output_path)
