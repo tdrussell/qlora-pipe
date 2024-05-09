@@ -7,7 +7,7 @@ from deepspeed.accelerator import get_accelerator
 from transformers.integrations import get_keys_to_not_convert, replace_with_bnb_linear
 from deepspeed.runtime.pipe import module as ds_pipe_module
 
-from utils import *
+from utils import is_main_process
 from kernels.cross_entropy_loss import Fast_CrossEntropyLoss
 
 
