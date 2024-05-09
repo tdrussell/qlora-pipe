@@ -90,6 +90,9 @@ class DistributedBatchSamper(torch.utils.data.Sampler):
                     batch_sequence_length = 0
                 current_batch.extend(slice)
                 current_size += slice_tokens
+            # Avoid empty batches
+            if len(global_batches) == 0 and len(current_batch) > 0:
+                global_batches.append(current_batch)
         else:
             global_batch_size = self.batch_size * self.num_replicas * self.batch_size_multiplier
             global_batches = [indices[i:i+global_batch_size] for i in range(0, len(indices), global_batch_size)]
