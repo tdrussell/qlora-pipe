@@ -676,3 +676,6 @@ if __name__ == '__main__':
             )
 
         step += 1
+
+    if is_main_process():
+        print('TRAINING COMPLETE!')
