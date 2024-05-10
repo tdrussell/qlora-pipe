@@ -563,7 +563,7 @@ if __name__ == '__main__':
 
     load_optimizer_states = config.get('load_optimizer_states', True)
     # if resuming and not loading optimizer states, we can't use warmup or the LR never changes from the initial value (still don't know why)
-    if 'warmup_steps' in config and load_optimizer_states:
+    if 'warmup_steps' in config and config['warmup_steps'] > 0 and load_optimizer_states:
         warmup_steps = config['warmup_steps']
         warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1/warmup_steps, total_iters=warmup_steps)
         lr_scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, schedulers=[warmup_scheduler, lr_scheduler], milestones=[warmup_steps])
