@@ -453,16 +453,6 @@ if __name__ == '__main__':
 
     train_data, eval_data_map = load_datasets(config, tokenizer)
 
-    if is_main_process():
-        # Warn if eval dataset is unusually large compared to the eval steps
-        eval_data_length = sum([len(eval_data) for eval_data in eval_data_map.values()])
-        # Expect <=15% of our time spent evaluating vs training
-        time_spent_evaling = eval_data_length / (eval_data_length + config['eval_steps'])
-        if time_spent_evaling > 0.15:
-            print(f'WARNING: eval dataset is unusually large compared to eval_steps. eval_data_length: {eval_data_length}, eval_steps: {config["eval_steps"]}; we will be spending approximately {time_spent_evaling*100:.2f}% of our time evaluating. Lowering eval_size and/or bumping eval_steps is recommended.')
-        else:
-            print(f'eval_data_length: {eval_data_length}, eval_steps: {config["eval_steps"]}; we will be spending approximately {time_spent_evaling*100:.2f}% of our time evaluating.')
-
     if args.debug_dataset:
         if is_main_process():
             for i, item in enumerate(iter(train_data)):
@@ -557,8 +547,24 @@ if __name__ == '__main__':
         batch_size_tokens=None if 'batch_size_tokens' not in config else config['batch_size_tokens'],
     )
     model_engine.set_dataloader(train_dataloader)
-
     steps_per_epoch = len(train_dataloader) // model_engine.gradient_accumulation_steps()
+
+    if is_main_process():
+        # Warn if eval dataset is unusually large compared to the eval steps
+        eval_data_length = sum([len(eval_data) for eval_data in eval_data_map.values()])
+        train_data_length = len(train_data)
+        evals_per_epoch = steps_per_epoch / config['eval_steps']
+        relative_eval_time = evals_per_epoch * eval_data_length
+        # train step very roughly 3 times slower due to backprop + usually activation checkpointing is enabled
+        relative_train_time = train_data_length * 3
+        # Expect <=15% of our time spent evaluating vs training
+        fraction_evaling = relative_eval_time / (relative_eval_time + relative_train_time)
+        print()
+        print(f'eval_data_length: {eval_data_length}, eval_steps: {config["eval_steps"]}; evals per epoch: {evals_per_epoch}. '
+              f'We will be spending approximately {fraction_evaling*100:.2f}% of our time evaluating.')
+        if fraction_evaling > 0.15:
+            print(f'WARNING: eval dataset is unusually large compared to eval_steps. We will spend a lot of time evaluating. Lowering eval_size and/or bumping eval_steps is recommended.')
+        print()
 
     if 'lr_scheduler' not in config or config['lr_scheduler'] == 'constant' or config['lr_scheduler'] == 'none':
         lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1.0)
