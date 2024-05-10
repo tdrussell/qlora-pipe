@@ -1,10 +1,9 @@
 import torch
 from torch import nn
-import torch.nn.functional as F
 import transformers
 import accelerate
 
-from pipeline_model import *
+from pipeline_model import ComputeMetrics, LayerSpec, PipelineModel, move_data_to_device, set_data
 from utils import DTYPE_MAP
 
 class EmbeddingPipe(nn.Module):
