@@ -606,11 +606,6 @@ if __name__ == '__main__':
             model_engine.grid.get_data_parallel_rank(),
             shuffle=False,
             group_by_length=False if 'group_by_length' not in config else config['group_by_length'],
-            # If we drop_last, we may lose up to batch_size*num_replicas data points. If we don't drop_last, we may have up
-            # to an extra num_replicas data points as padding (and the last batch may be smaller). For a small dataset where
-            # the batch_size doesn't affect any dynamics (since it's eval), the latter seems better.
-            # TODO: drop_last=False still broken with pipelining, need to fix
-            drop_last=True,
             batch_size_tokens=None if 'batch_size_tokens' not in config else config['batch_size_tokens'],
         )
         for name, eval_data in eval_data_map.items()

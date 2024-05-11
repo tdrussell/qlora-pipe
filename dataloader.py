@@ -25,93 +25,72 @@ def split_batch(batch, pieces):
     split_examples = zip(*(torch.split(tensor, split_size) for tensor in example_tuple))
     return [(ex, None) for ex in split_examples]
 
+
+def shuffle_list(l, seed):
+    g = torch.Generator()
+    g.manual_seed(seed)
+    shuffle_idx = torch.randperm(len(l), generator=g).tolist()
+    new_l = [l[i] for i in shuffle_idx]
+    return new_l
+
+
+def batch_size_tokens_after_padding(batch):
+    return max(math.ceil(pair[1] / PAD_TO_MULTIPLE) * PAD_TO_MULTIPLE for pair in batch) * len(batch)
+
+
 # A distributed batch sampler that supports grouping by length
 class DistributedBatchSamper(torch.utils.data.Sampler):
-    def __init__(self, dataset, batch_size, num_replicas, rank, batch_size_multiplier=1, shuffle=True, group_by_length=False, seed=0, drop_last=False, batch_size_tokens=None):
+    def __init__(self, dataset, batch_size, num_replicas, rank, batch_size_multiplier=1, shuffle=True, group_by_length=False, seed=0, batch_size_tokens=None):
         self.dataset = dataset
         self.batch_size = batch_size
         self.batch_size_tokens = batch_size_tokens
         self.batch_size_multiplier = batch_size_multiplier
         self.num_replicas = num_replicas
         self.rank = rank
-        self.drop_last = drop_last
-        if self.drop_last and len(self.dataset) % self.num_replicas != 0:
-            # Split to nearest available length that is evenly divisible.
-            # This is to ensure each rank receives the same amount of data when
-            # using this Sampler.
-            self.num_samples = math.ceil(
-                (len(self.dataset) - self.num_replicas) / self.num_replicas
-            )
-        else:
-            self.num_samples = math.ceil(len(self.dataset) / self.num_replicas)
-        self.total_size = self.num_samples * self.num_replicas
+        # every global batch must be evenly divisible by this amount
+        self.chunk_size = self.num_replicas * self.batch_size_multiplier
         self.shuffle = shuffle
         self.group_by_length = group_by_length
         self.seed = seed
 
+        # Make list of (index, size). Sort or shuffle as needed.
         indices = list(enumerate(self.dataset['length']))
         if self.group_by_length:
-            indices.sort(key=lambda t: t[1], reverse=True)
+            indices.sort(key=lambda t: t[1])
         elif self.shuffle:
-            # deterministically shuffle based on seed
-            g = torch.Generator()
-            g.manual_seed(self.seed)
-            shuffle_idx = torch.randperm(len(self.dataset), generator=g).tolist()
-            indices = [indices[i] for i in shuffle_idx]
+            indices = shuffle_list(indices, self.seed)
 
-        if not self.drop_last:
-            # add extra samples to make it evenly divisible
-            padding_size = self.total_size - len(indices)
-            if padding_size <= len(indices):
-                indices += indices[:padding_size]
-            else:
-                indices += (indices * math.ceil(padding_size / len(indices)))[:padding_size]
-        else:
-            # remove tail of data to make it evenly divisible.
-            indices = indices[:self.total_size]
-        assert len(indices) == self.total_size
+        # Group indices together into global batches.
+        global_batches = []
+        current_batch = []
+        for i in range(0, len(indices), self.chunk_size):
+            slice = indices[i:i+self.chunk_size]
+            if len(slice) < self.chunk_size:
+                # pad with random examples if slice is too small
+                padding_size = self.chunk_size - len(slice)
+                shuffled_indices = shuffle_list(indices, self.seed+1)
+                if padding_size < len(shuffled_indices):
+                    slice += shuffled_indices[:padding_size]
+                else:
+                    slice += (shuffled_indices * math.ceil(padding_size / len(shuffled_indices)))[:padding_size]
 
-        if self.batch_size_tokens:
-            global_batch_size_tokens = self.batch_size_tokens * self.num_replicas * self.batch_size_multiplier
-            chunk_size = self.num_replicas * self.batch_size_multiplier
-            global_batches = []
-            current_batch = []
-            current_size = 0
-            batch_sequence_length = 0
-            for i in range(0, len(indices), chunk_size):
-                slice = indices[i:i+chunk_size]
-                batch_sequence_length = max(batch_sequence_length, int(math.ceil(slice[0][1] / PAD_TO_MULTIPLE)) * PAD_TO_MULTIPLE)
-                slice = [(idx, batch_sequence_length) for idx, _ in slice]
-                slice_tokens = batch_sequence_length * len(slice)
-                if len(current_batch) > 0 and current_size + slice_tokens > global_batch_size_tokens:
-                    global_batches.append(current_batch)
-                    current_batch = []
-                    current_size = 0
-                    batch_sequence_length = 0
-                current_batch.extend(slice)
-                current_size += slice_tokens
-            # Avoid empty batches
-            if len(global_batches) == 0 and len(current_batch) > 0:
+            if self.should_emit_current_batch(current_batch, slice):
                 global_batches.append(current_batch)
-        else:
-            global_batch_size = self.batch_size * self.num_replicas * self.batch_size_multiplier
-            global_batches = [indices[i:i+global_batch_size] for i in range(0, len(indices), global_batch_size)]
-        if self.drop_last:
-            if self.batch_size_tokens:
-                global_batches = global_batches[:-1]
-            else:
-                global_batches = [b for b in global_batches if len(b) == global_batch_size]
+                current_batch = []
+            current_batch.extend(slice)
+
+        # Emit anything remaining
+        if len(current_batch) > 0:
+            global_batches.append(current_batch)
+
         if self.shuffle:
-            g = torch.Generator()
-            g.manual_seed(self.seed+1)
-            shuffle_idx = torch.randperm(len(global_batches), generator=g)
-            global_batches = [global_batches[i] for i in shuffle_idx]
+            global_batches = shuffle_list(global_batches, self.seed+2)
 
         # make sure the largest batch comes first to OOM sooner rather than later
         largest_global_batch = 0
         max_tokens = 0
         for global_batch_idx, batch in enumerate(global_batches):
-            total_batch_tokens = sum(t[1] for t in batch)
+            total_batch_tokens = batch_size_tokens_after_padding(batch)
             if total_batch_tokens > max_tokens:
                 max_tokens = total_batch_tokens
                 largest_global_batch = global_batch_idx
@@ -119,6 +98,20 @@ class DistributedBatchSamper(torch.utils.data.Sampler):
 
         batches_for_this_rank = [global_batch[self.rank:len(global_batch):self.num_replicas] for global_batch in global_batches]
         self.indices = [[i for i, _ in batch] for batch in batches_for_this_rank]
+
+    def should_emit_current_batch(self, current_batch, slice):
+        if not self.batch_size_tokens:
+            batch_size_after_appending = len(current_batch) // self.chunk_size + 1
+            if batch_size_after_appending > self.batch_size:
+                return True
+            else:
+                return False
+        else:
+            global_batch_size_tokens = self.batch_size_tokens * self.chunk_size
+            current_batch_tokens_after_appending = batch_size_tokens_after_padding(current_batch + slice)
+            if len(current_batch) > 0 and current_batch_tokens_after_appending > global_batch_size_tokens:
+                return True
+            return False
 
     def __iter__(self):
         return iter(self.indices)
@@ -128,7 +121,7 @@ class DistributedBatchSamper(torch.utils.data.Sampler):
 
 
 class PipelineDataLoader:
-    def __init__(self, dataset, tokenizer, batch_size, gradient_accumulation_steps, data_parallel_world_size, data_parallel_rank, shuffle=True, group_by_length=False, pad_to_multiple_of=PAD_TO_MULTIPLE, drop_last=True, batch_size_tokens=None):
+    def __init__(self, dataset, tokenizer, batch_size, gradient_accumulation_steps, data_parallel_world_size, data_parallel_rank, shuffle=True, group_by_length=False, pad_to_multiple_of=PAD_TO_MULTIPLE, batch_size_tokens=None):
         assert data_parallel_rank < data_parallel_world_size
         self.dataset = dataset
         self.tokenizer = tokenizer
@@ -145,7 +138,6 @@ class PipelineDataLoader:
             rank=data_parallel_rank,
             shuffle=shuffle,
             group_by_length=group_by_length,
-            drop_last=drop_last
         )
         self.reset()
 
@@ -220,15 +212,14 @@ class PipelineDataLoader:
 
 # for testing
 if __name__ == '__main__':
-    tokenizer = transformers.AutoTokenizer.from_pretrained(sys.argv[1], local_files_only=True, use_fast=False, legacy=True)
-    tokenizer.pad_token_id = 0
-    tokenizer.padding_side = 'right'
+    tokenizer = transformers.AutoTokenizer.from_pretrained(sys.argv[1], local_files_only=True)
+    tokenizer.pad_token_id = 1000
 
     from datasets import Dataset
     data = []
     for i in range(1, 41):
         input_ids = torch.tensor([i]*i)
-        data.append({'input_ids': input_ids, 'attention_mask': torch.ones_like(input_ids), 'labels': input_ids})
+        data.append({'input_ids': input_ids, 'attention_mask': torch.ones_like(input_ids), 'labels': input_ids, 'length': len(input_ids)})
     dataset = Dataset.from_list(data)
 
     # dataloader = PipelineDataLoader(dataset, tokenizer, batch_size=2, gradient_accumulation_steps=2, data_parallel_world_size=1, data_parallel_rank=0, group_by_length=True, pad_to_multiple_of=None)
