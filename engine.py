@@ -1,3 +1,5 @@
+from collections import deque
+
 import torch
 from torch import nn
 
@@ -12,6 +14,8 @@ from deepspeed.runtime.activation_checkpointing import checkpointing as ds_check
 from deepspeed.runtime.pipe.module import PipelineModule
 from deepspeed.runtime import utils as ds_utils
 from deepspeed.runtime.pipe.module import LayerSpec
+
+from utils import log
 
 
 def initialize(args=None,
@@ -42,6 +46,10 @@ def initialize(args=None,
 
 
 class CustomPipelineEngine(PipelineEngine):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.total_steps = None
+        self.etas = deque()
 
 
     def train_batch(self):
@@ -70,11 +78,17 @@ class CustomPipelineEngine(PipelineEngine):
             if self.global_rank == 0:
                 elapsed = self.timers(TRAIN_BATCH_TIMER).elapsed(reset=True) / 1000.0
                 iter_time = elapsed / self.steps_per_print()
+                eta = iter_time * (self.total_steps - self.global_steps) / 3600
+                self.etas.append(eta)
+                while len(self.etas) > 10:
+                    self.etas.popleft()
+                rolling_eta = sum(self.etas) / len(self.etas)
                 tput = self.train_batch_size() / iter_time
-                print(f'steps: {self.global_steps} '
-                      f'loss: {self.agg_train_loss:0.4f} '
-                      f'iter time (s): {iter_time:0.3f} '
-                      f'samples/sec: {tput:0.3f}')
+                log(f'step: {self.global_steps:>5} / {self.total_steps:>5} '
+                    f'loss: {self.agg_train_loss:0.4f} '
+                    f'iter time (s): {iter_time:0.3f} '
+                    f'samples/sec: {tput:0.3f} '
+                    f'eta (h): {rolling_eta:0.3f}')
             else:
                 self.timers(TRAIN_BATCH_TIMER).elapsed(reset=True)
 
