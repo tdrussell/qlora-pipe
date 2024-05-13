@@ -364,6 +364,7 @@ def load_pipeline_model_with_lora(config, model_type):
             layers_to_transform=layers_to_transform,
             bias='none',
             task_type='CAUSAL_LM',
+            use_dora=config.get('use_dora', False)
         )
 
         # If we set the default dtype to bfloat16 at the very beginning, the loss blows up.
