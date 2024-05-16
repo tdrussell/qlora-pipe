@@ -18,7 +18,16 @@ os.makedirs(output_path, exist_ok=True)
 lora_config = peft.LoraConfig.from_json_file(lora_path / 'adapter_config.json')
 scale = lora_config['lora_alpha'] / lora_config['r']
 
-lora_state = torch.load(lora_path / 'adapter_model.bin', map_location='cuda')
+print('Loading LoRA model...')
+
+# Check if we have adapter_model.bin or adapter_model.safetensors
+if (lora_path / 'adapter_model.safetensors').exists():
+    lora_state = safetensors.torch.load_file(lora_path / 'adapter_model.safetensors')
+    # Move mapped entries to cuda
+    for key, value in tqdm(lora_state.items()):
+        lora_state[key] = value.to('cuda')
+else:
+    lora_state = torch.load(lora_path / 'adapter_model.bin', map_location='cuda')
 
 def find_lora_weights(key):
     lora_A = None
