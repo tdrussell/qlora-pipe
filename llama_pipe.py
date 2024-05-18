@@ -103,10 +103,10 @@ class LlamaForCausalLMPipe(PipelineModel, transformers.LlamaForCausalLM):
     def __init__(self, config, quantization_config, **kwargs):
         model_config = transformers.LlamaConfig.from_pretrained(config['model'])
         model_config._attn_implementation = 'flash_attention_2'
-        torch.set_default_dtype(DTYPE_MAP[config['bnb_compute_dtype']])
+        torch.set_default_dtype(DTYPE_MAP[config.get('model_weight_dtype', 'bfloat16')])
         with accelerate.init_empty_weights():
             transformers.LlamaForCausalLM.__init__(self, model_config)
-        PipelineModel.__init__(self, config, quantization_config, **kwargs)
+            PipelineModel.__init__(self, config, quantization_config, **kwargs)
         torch.set_default_dtype(torch.float32)
 
     def to_layer_specs(self):
@@ -142,10 +142,10 @@ class Qwen2ForCausalLMPipe(PipelineModel, transformers.Qwen2ForCausalLM):
     def __init__(self, config, quantization_config, **kwargs):
         model_config = transformers.Qwen2Config.from_pretrained(config['model'])
         model_config._attn_implementation = 'flash_attention_2'
-        torch.set_default_dtype(DTYPE_MAP[config['bnb_compute_dtype']])
+        torch.set_default_dtype(DTYPE_MAP[config.get('model_weight_dtype', 'bfloat16')])
         with accelerate.init_empty_weights():
             transformers.Qwen2ForCausalLM.__init__(self, model_config)
-        PipelineModel.__init__(self, config, quantization_config, **kwargs)
+            PipelineModel.__init__(self, config, quantization_config, **kwargs)
         torch.set_default_dtype(torch.float32)
 
     def to_layer_specs(self):
@@ -180,10 +180,10 @@ class CohereForCausalLMPipe(PipelineModel, transformers.CohereForCausalLM):
     def __init__(self, config, quantization_config, **kwargs):
         model_config = transformers.CohereConfig.from_pretrained(config['model'])
         model_config._attn_implementation = 'flash_attention_2'
-        torch.set_default_dtype(DTYPE_MAP[config['bnb_compute_dtype']])
+        torch.set_default_dtype(DTYPE_MAP[config.get('model_weight_dtype', 'bfloat16')])
         with accelerate.init_empty_weights():
             transformers.CohereForCausalLM.__init__(self, model_config)
-        PipelineModel.__init__(self, config, quantization_config, **kwargs)
+            PipelineModel.__init__(self, config, quantization_config, **kwargs)
         torch.set_default_dtype(torch.float32)
 
     def to_layer_specs(self):

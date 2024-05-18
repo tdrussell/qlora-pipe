@@ -282,22 +282,27 @@ def one_at_a_time():
 def load_pipeline_model_with_lora(config, model_type):
     full_fine_tune = config['full_fine_tune']
 
-    bnb_compute_dtype = DTYPE_MAP[config['bnb_compute_dtype']]
-
-    if config['load_in_4bit']:
+    if config.get('quantization', None):
         assert not full_fine_tune
         no_quant_modules = ['lm_head']
         if model_type == 'mixtral':
             # the expert routing weights are tiny and probably important, don't quantize
             no_quant_modules.append('gate')
-        quantization_config_params = {
-            'load_in_4bit': True,
-            'bnb_4bit_compute_dtype': bnb_compute_dtype,
-            'bnb_4bit_quant_type': 'nf4',
-            'bnb_4bit_use_double_quant': config['use_double_quant'],
-            'llm_int8_skip_modules': no_quant_modules
-        }
-        quantization_config = transformers.BitsAndBytesConfig(**quantization_config_params)
+        if bnb_quant_config := config['quantization'].get('bnb', None):
+            bnb_compute_dtype = DTYPE_MAP[bnb_quant_config.get('compute_dtype', 'float32')]
+            quantization_config_params = {
+                'load_in_4bit': bnb_quant_config.get('load_in_4bit', False),
+                'load_in_8bit': bnb_quant_config.get('load_in_8bit', False),
+                'bnb_4bit_compute_dtype': bnb_compute_dtype,
+                'bnb_4bit_quant_type': 'nf4',
+                'bnb_4bit_use_double_quant': bnb_quant_config.get('use_double_quant', False),
+                'llm_int8_skip_modules': no_quant_modules
+            }
+            quantization_config = transformers.BitsAndBytesConfig(**quantization_config_params)
+        else:
+            raise NotImplementedError(f'Invalid quantization config')
+        if is_main_process():
+            print(f'Quantization config: {quantization_config}')
     else:
         quantization_config = None
 
