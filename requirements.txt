@@ -15,6 +15,7 @@ flash-attn
 pyyaml
 tqdm
 triton
+git+https://github.com/mobiusml/hqq
 
 # minimum Axolotl dependencies for what we use
 addict

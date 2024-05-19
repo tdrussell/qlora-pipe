@@ -1,11 +1,10 @@
 # Paths
-model = '/data/models/Mistral-7B-v0.1'
-output_dir = '/home/anon/training_runs/mistral_7b_example'
+model = '/data2/models/Mistral-7B-v0.1'
+output_dir = '/data/training_runs/mistral_7b_example'
 
 # Lora configuration
-# can use full_fine_tune=true and load_in_4bit=false to train the whole model instead of a LoRA
+# can use full_fine_tune=true and no quantization to train the whole model instead of a LoRA
 #full_fine_tune = true
-load_in_4bit = true
 lora_rank = 64
 lora_alpha = 64
 lora_dropout = 0.05
@@ -13,7 +12,7 @@ lora_dropout = 0.05
 # Train only specific modules. This is passed to the parameter of the same name in the LoraConfig.
 # If not set, adapt all linear modules.
 # Note, this ALSO affects full fine tuning. In that case, if this is set, only weights containing one
-# of these keys as substring will have requires_grad.
+# of these keys as substring will have requires_grad. If not set everything is trained.
 #target_modules = ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj']
 
 # can specify layers to adapt with LoRA if you want
@@ -45,12 +44,13 @@ eval_steps = 100
 save_steps = 200
 checkpoint_every_n_minutes = 60
 eval_before_first_step = true  # do an eval before any training happens
-bnb_compute_dtype = 'bfloat16'
+# dtype to load the underlying model weights in
+model_weight_dtype = 'bfloat16'
+# dtype for the LoRA weights
 lora_weight_dtype = 'bfloat16'
 # Can have the saved weights be different dtype. Don't need to set this. Could be useful for
 # training in float32 but saving with float16.
 #save_dtype = 'bfloat16'
-use_double_quant = false
 
 # sort examples by length before dividing them into batches
 # this makes all examples in a batch approximately the same length, to minimize padding
@@ -93,6 +93,25 @@ dataset_interleave_stopping_strategy = 'all_exhausted'
 # Can set this lower than training, so we don't drop as many examples when trying to make equal-sized batches.
 # Default if not set: same as training GAS.
 eval_gradient_accumulation_steps = 1
+
+# bitsandbytes 4 bit quantization. The parameters here become arguments to Transformers BitsAndBytesConfig.
+[quantization.bnb]
+load_in_4bit = true
+bnb_4bit_use_double_quant = false
+bnb_4bit_compute_dtype = 'bfloat16'
+
+# HQQ quantization. The parameters here become arguments to CustomHQQConfig.
+# [quantization.hqq]
+# nbits = 4
+# group_size = 64
+# compute_dtype = 'bfloat16'
+
+# (Optional) You can override the quant params for certain modules. This does substring matching, e.g. if 'gate_proj'
+# is a substring of the full module name, anything specified overwrites the defaults in [quantization.hqq].
+# [quantization.hqq.dynamic_config]
+# gate_proj = {nbits = 2, group_size = 16, quant_zero = true, quant_scale = true}
+# up_proj = {nbits = 2, group_size = 16, quant_zero = true, quant_scale = true}
+# down_proj = {nbits = 2, group_size = 16, quant_zero = true, quant_scale = true}
 
 [optimizer]
 # AdamW or AdamW8bit

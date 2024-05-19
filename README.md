@@ -11,6 +11,7 @@ That being said, if something doesn't work right, or you would like it to suppor
 ## Features
 - Pipeline parallel training, for efficiently training large models that cannot fit on one GPU
 - Supports QLoRA, LoRA, and full fine tuning
+- Quantize weights using either bitsandbytes or HQQ
 - Efficient model loading. Each process only loads the layers it needs, and quantizes and moves them to the GPU layer-by-layer. This means you can load a large model on a lot of GPUs even with limited system RAM.
 - Load any dataset that Axolotl can, using the same YAML config file format
 - Support for "raw text" training using either a structured list of documents in a JSON file, or a single txt file
@@ -40,7 +41,9 @@ conda create -n training python=3.12
 conda activate training
 ```
 
-Install Pytorch: https://pytorch.org/get-started/locally/
+Install Pytorch **NIGHTLY** version (if before 2.4): https://pytorch.org/get-started/locally/
+
+Until Pytorch is at 2.4, HQQ quantization requires Pytorch nightly if using Python 3.12, because of torch.compile().
 
 Install cuda toolkit (make sure it matches the cuda version you used for Pytorch), e.g.:
 ```
@@ -109,6 +112,10 @@ You can have multiple datasets. Just add additional `[[datasets]]` entries. When
 Sample packing is not currently implemented. Instead, there is the option `batch_size_tokens`. If this field is set, the batch size in the Deepspeed config file is ignored, and instead the batch size is adjusted dynamically to target a fixed number of tokens per batch, per device. This was easier to implement than sample packing, and does basically the same thing. It is also efficient: if I set batch_size_tokens to a modest 10000 and train a 7B model with the Alpaca dataset, all my 4090s hit their 350W power limit cap. Unless I'm missing something (definitely possible), it seems there is no need to support sample packing.
 
 ## Changelog
+### 2024-05-19
+**The old config file format will break.** Quantization is configured slightly differently now. Read examples/config_7b.toml. It's only a few lines to change.
+- Change how quantization is configured. Quantization is now its own table in the TOML file.
+- Add HQQ quantization.
 ### 2024-04-28
 - Add llama3 instruction formatting option when loading a ShareGPT formatted dataset using Axolotl.
 - Automatically add BOS token for Llama 3.

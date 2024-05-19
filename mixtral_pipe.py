@@ -107,14 +107,14 @@ class MixtralRMSNormPipe(nn.Module):
 
 
 class LmHeadPipe(nn.Module):
-    def __init__(self, loader_util, orig):
+    def __init__(self, loader_util, lm_head):
         super().__init__()
-        self.orig = orig
+        self.lm_head = lm_head
         loader_util.load_state_dict_into_module(self)
 
     def forward(self, inputs):
         hidden_states, labels, *router_logits = inputs
-        return self.orig(hidden_states), labels, *router_logits
+        return self.lm_head(hidden_states), labels, *router_logits
 
 
 def load_balancing_loss_func(gate_logits: torch.Tensor, num_experts: torch.Tensor = None, top_k=2) -> float:

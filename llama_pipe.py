@@ -56,9 +56,11 @@ class LlamaRMSNormPipe(nn.Module):
 
 
 class LmHeadPipe(nn.Module):
-    def __init__(self, loader_util, orig, logit_scale=1.0, tie_weights=None):
+    def __init__(self, loader_util, lm_head, logit_scale=1.0, tie_weights=None):
         super().__init__()
-        self.orig = orig
+        # Unlike the other wrapper classes, this is called lm_head and not orig. Because this is directly a
+        # nn.Linear layer, it needs to keep the same attribute name so quantization knows not to quantize it.
+        self.lm_head = lm_head
         self.logit_scale = logit_scale
         if tie_weights:
             self.orig.weight.original_name = tie_weights
@@ -66,7 +68,7 @@ class LmHeadPipe(nn.Module):
 
     def forward(self, inputs):
         hidden_states, labels = inputs
-        return self.orig(hidden_states*self.logit_scale), labels
+        return self.lm_head(hidden_states*self.logit_scale), labels
 
 
 class LlamaDecoderLayerPipe(nn.Module):

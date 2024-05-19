@@ -10,8 +10,10 @@ import json
 import gc
 
 import torch
+from torch import nn
 from torch.utils.tensorboard import SummaryWriter
 import transformers
+import peft
 from peft import LoraConfig, get_peft_model
 import deepspeed
 from deepspeed.runtime.pipe.module import LayerSpec
@@ -19,6 +21,7 @@ import toml
 import bitsandbytes
 from safetensors.torch import save_file
 from fastchat.conversation import register_conv_template, Conversation, SeparatorStyle
+from hqq.core import quantize as hqq_quantize
 
 from dataset_utils import load_datasets
 import dataloader
@@ -27,6 +30,7 @@ import engine
 import llama_pipe
 import mixtral_pipe
 import unsloth_utils
+import hqq_utils
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--config', help='Path to TOML configuration file.')
@@ -289,16 +293,20 @@ def load_pipeline_model_with_lora(config, model_type):
             # the expert routing weights are tiny and probably important, don't quantize
             no_quant_modules.append('gate')
         if bnb_quant_config := config['quantization'].get('bnb', None):
-            bnb_compute_dtype = DTYPE_MAP[bnb_quant_config.get('compute_dtype', 'float32')]
-            quantization_config_params = {
-                'load_in_4bit': bnb_quant_config.get('load_in_4bit', False),
-                'load_in_8bit': bnb_quant_config.get('load_in_8bit', False),
-                'bnb_4bit_compute_dtype': bnb_compute_dtype,
-                'bnb_4bit_quant_type': 'nf4',
-                'bnb_4bit_use_double_quant': bnb_quant_config.get('use_double_quant', False),
-                'llm_int8_skip_modules': no_quant_modules
-            }
-            quantization_config = transformers.BitsAndBytesConfig(**quantization_config_params)
+            if bnb_compute_dtype := bnb_quant_config.get('bnb_4bit_compute_dtype', None):
+                bnb_quant_config['bnb_4bit_compute_dtype'] = DTYPE_MAP[bnb_compute_dtype]
+            if 'bnb_4bit_quant_type' not in bnb_quant_config:
+                # Always want to default to nf4 if not specified.
+                bnb_quant_config['bnb_4bit_quant_type'] = 'nf4'
+            if llm_int8_skip_modules := bnb_quant_config.get('llm_int8_skip_modules', None):
+                no_quant_modules.extend(llm_int8_skip_modules)
+                no_quant_modules = list(set(no_quant_modules))
+            bnb_quant_config['llm_int8_skip_modules'] = no_quant_modules
+            quantization_config = transformers.BitsAndBytesConfig(**bnb_quant_config)
+        elif hqq_quant_config := config['quantization'].get('hqq', None):
+            quantization_config = hqq_utils.CustomHQQConfig(**hqq_quant_config)
+            # Use ATEN backend if possible, else PYTORCH. PYTORCH_COMPILE was only a tiny bit faster, and requires triton nightly.
+            hqq_quantize.HQQLinear.set_backend(hqq_quantize.HQQBackend.ATEN if quantization_config.use_aten() else hqq_quantize.HQQBackend.PYTORCH)
         else:
             raise NotImplementedError(f'Invalid quantization config')
         if is_main_process():
