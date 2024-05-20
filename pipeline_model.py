@@ -189,6 +189,9 @@ def _replace_with_hqq_linear(parent_modules_map, name, full_name, quantization_c
         initialize=True,
         del_orig=True
     )
+    # Quantization itself uses a decent amount of VRAM. Temporarily move each quantized parameter to the CPU as we
+    # finish, so the quant process doesn't OOM. Deepspeed will move everything to the correct device later.
+    hqq_linear.W_q.data = hqq_linear.W_q.data.to('cpu')
     # Store the module class in case we need to transpose the weight later
     hqq_linear.source_cls = type(module)
     # Force requires grad to False to avoid unexpected errors
