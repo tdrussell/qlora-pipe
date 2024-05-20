@@ -51,6 +51,10 @@ lora_weight_dtype = 'bfloat16'
 # Can have the saved weights be different dtype. Don't need to set this. Could be useful for
 # training in float32 but saving with float16.
 #save_dtype = 'bfloat16'
+# Keep this number of stepXXXX (model saves) and global_stepXXX (checkpoint saves) and delete the rest
+# (this only applies to the current training session, and resumed training sessions will not touch
+# old saves)
+keep_states = 3
 
 # sort examples by length before dividing them into batches
 # this makes all examples in a batch approximately the same length, to minimize padding
