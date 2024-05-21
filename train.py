@@ -292,11 +292,14 @@ def load_pipeline_model_with_lora(config, model_type):
             use_dora=config.get('use_dora', False)
         )
 
-        # If we set the default dtype to bfloat16 at the very beginning, the loss blows up.
-        # If we set it only here for the lora weights, everything is fine. ¯\_(ツ)_/¯
-        torch.set_default_dtype(DTYPE_MAP[config['lora_weight_dtype']])
+
         lora_model = get_peft_model(model, lora_config)
-        torch.set_default_dtype(torch.float32)
+        # If the underlying weights are floats, the lora weights have already been
+        # cast to the same dtype, so we need to change the dtype here.
+        for p in lora_model.parameters():
+            if p.requires_grad:
+                p.data = p.data.to(DTYPE_MAP[config.get('lora_weight_dtype', 'float32')])
+
         lora_model.model.config.use_cache = False
         for name, p in lora_model.named_parameters():
             p.original_name = name
