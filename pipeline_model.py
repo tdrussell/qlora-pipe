@@ -20,8 +20,13 @@ def move_data_to_device(module, device):
     # handle lora
     if hasattr(module, 'base_layer'):
         module = module.base_layer
-    orig_data = module.weight.data
-    module.weight.data = orig_data.to(device, non_blocking=True)
+    # handle HQQ
+    if hasattr(module, 'W_q'):
+        orig_data = module.W_q.data
+        module.W_q.data = orig_data.to(device, non_blocking=True)
+    else:
+        orig_data = module.weight.data
+        module.weight.data = orig_data.to(device, non_blocking=True)
     return orig_data
 
 
@@ -29,7 +34,11 @@ def set_data(module, data):
     # handle lora
     if hasattr(module, 'base_layer'):
         module = module.base_layer
-    module.weight.data = data
+    # handle HQQ
+    if hasattr(module, 'W_q'):
+        module.W_q.data = data
+    else:
+        module.weight.data = data
 
 
 def entropy_fn(logits):

@@ -68,7 +68,6 @@ def set_experts_data(experts, orig_data):
         set_data(experts[i].w3, orig_w3)
 
 
-# TODO: make MLP offloading work (right now it's just copied from LlamaDecoderLayerPipe)
 class MixtralDecoderLayerPipe(nn.Module):
     def __init__(self, loader_util, orig, num_experts_to_offload):
         super().__init__()
@@ -77,17 +76,28 @@ class MixtralDecoderLayerPipe(nn.Module):
         self.num_experts_to_offload = num_experts_to_offload
         loader_util.load_state_dict_into_module(self)
 
+    # See note on MLP offloading in llama_pipe.py
     def forward(self, inputs):
+        def set_cpu_data():
+            set_experts_data(self.orig.block_sparse_moe.experts, orig_data)
+        def set_cpu_data_hook(grad):
+            set_cpu_data()
+            return None
+
         hidden_states, attention_mask, position_ids, labels = inputs[:4]
         input_router_logits = inputs[4:]
         if self.mlp_offloaded_to_cpu:
+            if hidden_states.requires_grad:
+                hidden_states.register_hook(set_cpu_data_hook)
             orig_data = move_experts_to_device(self.orig.block_sparse_moe.experts, hidden_states.device, self.num_experts_to_offload)
         hidden_states, router_logits = self.orig(hidden_states, attention_mask=attention_mask, position_ids=position_ids, output_router_logits=True)
-        router_logits = router_logits.to(torch.float32)
-        router_logits = input_router_logits + (router_logits,)
-        result = (hidden_states, attention_mask, position_ids, labels, *router_logits)
-        if self.mlp_offloaded_to_cpu:
-            set_experts_data(self.orig.block_sparse_moe.experts, orig_data)
+        # TODO: fix unsloth gradient checkpointing when we return router logits
+        #router_logits = router_logits.to(torch.float32)
+        #router_logits = input_router_logits + (router_logits,)
+        #result = (hidden_states, attention_mask, position_ids, labels, *router_logits)
+        result = (hidden_states, attention_mask, position_ids, labels)
+        if self.mlp_offloaded_to_cpu and not torch.is_grad_enabled():
+            set_cpu_data()
         return result
 
     def offload_mlp_to_cpu(self):

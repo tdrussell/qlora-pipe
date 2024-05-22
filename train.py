@@ -248,6 +248,7 @@ def load_pipeline_model_with_lora(config, model_type):
 
     partition_method = 'estimated_size'
     if config['activation_checkpointing']:
+        # NOTE: must use a reentrant checkpointing function for MLP offloading to work.
         if config['activation_checkpointing'] == 'unsloth':
             checkpoint_func = unsloth_utils.unsloth_checkpoint
         else:

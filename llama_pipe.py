@@ -78,17 +78,31 @@ class LlamaDecoderLayerPipe(nn.Module):
         self.mlp_offloaded_to_cpu = False
         loader_util.load_state_dict_into_module(self)
 
+    # A note on MLP offloading:
+    # We take advantage of how activation checkpointing works with reentrant checkpointing functions.
+    # During the forward pass, if gradients are disabled (eval or first forward pass of activation checkpointing)
+    # we offload the weights back to CPU at the end of the function. If gradients are enabled (second forward pass
+    # of activation checkpointing) we leave the weights on GPU, and use a backward hook to offload to CPU after the
+    # backward pass of this function is completed. This way the weights stay on the GPU for the backward pass.
     def forward(self, inputs):
+        def set_cpu_data():
+            set_data(self.orig.mlp.up_proj, cpu_up_proj)
+            set_data(self.orig.mlp.down_proj, cpu_down_proj)
+            set_data(self.orig.mlp.gate_proj, cpu_gate_proj)
+        def set_cpu_data_hook(grad):
+            set_cpu_data()
+            return None
+
         hidden_states, attention_mask, position_ids, labels = inputs
         if self.mlp_offloaded_to_cpu:
+            if hidden_states.requires_grad:
+                hidden_states.register_hook(set_cpu_data_hook)
             cpu_up_proj = move_data_to_device(self.orig.mlp.up_proj, hidden_states.device)
             cpu_down_proj = move_data_to_device(self.orig.mlp.down_proj, hidden_states.device)
             cpu_gate_proj = move_data_to_device(self.orig.mlp.gate_proj, hidden_states.device)
         result = (self.orig(hidden_states, attention_mask=attention_mask, position_ids=position_ids)[0], attention_mask, position_ids, labels)
-        if self.mlp_offloaded_to_cpu:
-            set_data(self.orig.mlp.up_proj, cpu_up_proj)
-            set_data(self.orig.mlp.down_proj, cpu_down_proj)
-            set_data(self.orig.mlp.gate_proj, cpu_gate_proj)
+        if self.mlp_offloaded_to_cpu and not torch.is_grad_enabled():
+            set_cpu_data()
         return result
 
     def offload_mlp_to_cpu(self):
