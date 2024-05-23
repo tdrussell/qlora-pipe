@@ -234,6 +234,8 @@ def load_pipeline_model_with_lora(config, model_type):
         model = llama_pipe.Qwen2ForCausalLMPipe(config, quantization_config=quantization_config)
     elif model_type == 'cohere':
         model = llama_pipe.CohereForCausalLMPipe(config, quantization_config=quantization_config)
+    elif model_type == 'phi3':
+        model = llama_pipe.Phi3ForCausalLMPipe(config, quantization_config=quantization_config)
     else:
         raise NotImplementedError()
 
