@@ -28,6 +28,10 @@ def yield_sequences_from_token_batch(tokenizer, token_batch, sequence_len):
             example_tokens.extend(taken)
             if len(example_tokens) >= sequence_len:
                 assert len(example_tokens) == sequence_len
+                # Force each sequence to start with BOS.
+                # TODO: can we do this better? It's possible that the first token is EOS followed by BOS.
+                if example_tokens[0] != tokenizer.bos_token_id:
+                    example_tokens = [tokenizer.bos_token_id] + example_tokens[:-1]
                 yield example_tokens
                 need = sequence_len
                 example_tokens = []
