@@ -277,7 +277,7 @@ def load_pipeline_model_with_lora(config, model_type):
         for name, p in model.named_parameters():
             p.original_name = name
         if isinstance(target_modules, list):
-            for name, p in pipeline_model.named_parameters():
+            for name, p in model.named_parameters():
                 if not any(target in name for target in config['target_modules']):
                     p.requires_grad = False
                     print(f'not training {name} because it is not present in target_modules')
