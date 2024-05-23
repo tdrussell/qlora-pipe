@@ -87,7 +87,7 @@ class Saver:
         dp_id = self.model_engine.grid.get_data_parallel_rank()
         stage_id = self.model_engine.grid.get_pipe_parallel_rank()
         save_dir = self.save_root + name
-        tmp_dir = os.path.join(self.save_dir, 'tmp')
+        tmp_dir = os.path.join(save_dir, 'tmp')
         if dp_id == 0 and stage_id == 0:
             os.makedirs(tmp_dir, exist_ok=False)
         deepspeed.comm.barrier()
@@ -147,7 +147,7 @@ class Saver:
 
     def save_model(self, name):
         # ignore epoch saves for chrono_states
-        if name.startswith("step"): 
+        if name.startswith("step"):
             self.will_save('step', name)
         self.save_full_model(name) if self.lora_config is None else self.save_lora(name)
 
