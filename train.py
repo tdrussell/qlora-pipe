@@ -37,6 +37,7 @@ parser.add_argument('--config', help='Path to TOML configuration file.')
 parser.add_argument('--local_rank', type=int, default=-1,
                     help='local rank passed from distributed launcher')
 parser.add_argument('--debug_dataset', type=int, help='print out this many training examples and then quit')
+parser.add_argument('--resume_from_checkpoint', action='store_true', help='resume training from the most recent checkpoint')
 parser = deepspeed.add_config_arguments(parser)
 args = parser.parse_args()
 
@@ -328,10 +329,16 @@ if __name__ == '__main__':
         config = toml.load(f)
     set_config_defaults(config)
 
+    resume_from_checkpoint = (
+        args.resume_from_checkpoint if hasattr(args, 'resume_from_checkpoint')
+        else config['resume_from_checkpoint'] if 'resume_from_checkpoint' in config
+        else False
+    )
+
     deepspeed.init_distributed()
 
     # if this is a new run, create a new dir for it
-    if ('resume_from_checkpoint' not in config or not config['resume_from_checkpoint']) and is_main_process():
+    if not resume_from_checkpoint and is_main_process():
         run_dir = os.path.join(config['output_dir'], datetime.now(timezone.utc).strftime('%Y%m%d_%H-%M-%S'))
         os.makedirs(run_dir, exist_ok=True)
         shutil.copy(args.config, run_dir)
@@ -487,7 +494,7 @@ if __name__ == '__main__':
     model_engine.lr_scheduler = lr_scheduler
 
     step = 1
-    if 'resume_from_checkpoint' in config and config['resume_from_checkpoint']:
+    if resume_from_checkpoint:
         load_path, client_state = model_engine.load_checkpoint(
             run_dir,
             load_module_strict=False,
@@ -529,7 +536,7 @@ if __name__ == '__main__':
     tb_writer = SummaryWriter(log_dir=run_dir) if is_main_process() else None
 
     epoch = train_dataloader.epoch
-    if 'eval_before_first_step' in config and config['eval_before_first_step'] and ('resume_from_checkpoint' not in config or not config['resume_from_checkpoint']):
+    if 'eval_before_first_step' in config and config['eval_before_first_step'] and not resume_from_checkpoint:
         evaluate(model_engine, eval_dataloaders, tb_writer, 0, eval_gradient_accumulation_steps)
 
     saver = Saver(model_engine, pipeline_model, train_dataloader, lora_config, run_dir, args, config)
