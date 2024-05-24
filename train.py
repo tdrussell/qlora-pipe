@@ -331,7 +331,7 @@ if __name__ == '__main__':
     deepspeed.init_distributed()
 
     # if this is a new run, create a new dir for it
-    if not config['resume_from_checkpoint'] and is_main_process():
+    if ('resume_from_checkpoint' not in config or not config['resume_from_checkpoint']) and is_main_process():
         run_dir = os.path.join(config['output_dir'], datetime.now(timezone.utc).strftime('%Y%m%d_%H-%M-%S'))
         os.makedirs(run_dir, exist_ok=True)
         shutil.copy(args.config, run_dir)
@@ -487,7 +487,7 @@ if __name__ == '__main__':
     model_engine.lr_scheduler = lr_scheduler
 
     step = 1
-    if config['resume_from_checkpoint']:
+    if 'resume_from_checkpoint' in config and config['resume_from_checkpoint']:
         load_path, client_state = model_engine.load_checkpoint(
             run_dir,
             load_module_strict=False,
@@ -529,7 +529,7 @@ if __name__ == '__main__':
     tb_writer = SummaryWriter(log_dir=run_dir) if is_main_process() else None
 
     epoch = train_dataloader.epoch
-    if config['eval_before_first_step'] and not config['resume_from_checkpoint']:
+    if 'eval_before_first_step' in config and config['eval_before_first_step'] and ('resume_from_checkpoint' not in config or not config['resume_from_checkpoint']):
         evaluate(model_engine, eval_dataloaders, tb_writer, 0, eval_gradient_accumulation_steps)
 
     saver = Saver(model_engine, pipeline_model, train_dataloader, lora_config, run_dir, args, config)
