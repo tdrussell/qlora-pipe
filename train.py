@@ -66,17 +66,20 @@ def get_most_recent_run_dir(output_dir):
 
 
 def write_metrics(tb_writer, prefix, metrics, step):
+    rv = None
+
     tb_writer.add_scalar(f'{prefix}/optimized_loss', metrics[0].mean().item(), step)
 
     if len(metrics) >= 2:
         losses = metrics[1].view(-1)
+        rv = losses.mean().item()
         sorted_losses, sorted_losses_idx = torch.sort(losses)
         quantiles = torch.tensor([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.96, 0.97, 0.98, 0.99, 0.999], dtype=torch.float32).to(losses.device)
         quantiles_idx = [int(len(losses)*quantile) for quantile in quantiles]
         loss_quantiles = [sorted_losses[i] for i in quantiles_idx]
         for quantile, value in zip(quantiles, loss_quantiles):
             tb_writer.add_scalar(f'{prefix}/loss_quantile_{quantile:.3f}', value, step)
-        tb_writer.add_scalar(f'{prefix}/loss', losses.mean().item(), step)
+        tb_writer.add_scalar(f'{prefix}/loss', rv, step)
         tb_writer.add_histogram(f'{prefix}/log_loss_hist', torch.log(1e-10 + losses), step)
 
     if len(metrics) >= 3:
@@ -100,6 +103,7 @@ def write_metrics(tb_writer, prefix, metrics, step):
     if len(metrics) >= 8:
         tb_writer.add_scalar(f'{prefix}/alternate_load_balancing_loss', metrics[7].mean().item(), step)
 
+    return rv
 
 def evaluate_single(model_engine, name, eval_dataloader, tb_writer, step, eval_gradient_accumulation_steps):
     orig_micro_batches = model_engine.micro_batches
@@ -119,19 +123,25 @@ def evaluate_single(model_engine, name, eval_dataloader, tb_writer, step, eval_g
     eval_dataloader.reset()
     model_engine.micro_batches = orig_micro_batches
     eval_metrics = [torch.cat(metric_list) for metric_list in all_metrics]
+    loss = None
     if is_main_process():
-        write_metrics(tb_writer, f'eval/{name}', eval_metrics, step)
+        loss = write_metrics(tb_writer, f'eval/{name}', eval_metrics, step)
+    return loss
 
 
 def evaluate(model_engine, eval_dataloaders, tb_writer, step, eval_gradient_accumulation_steps):
     if is_main_process():
         print('Running eval')
     start = time.time()
+    loss = []
     for name, eval_dataloader in eval_dataloaders.items():
-        evaluate_single(model_engine, name, eval_dataloader, tb_writer, step, eval_gradient_accumulation_steps)
+        loss_or_none = evaluate_single(model_engine, name, eval_dataloader, tb_writer, step, eval_gradient_accumulation_steps)
+        if loss_or_none is not None:
+            loss.append(loss_or_none)
     duration = time.time() - start
     if is_main_process():
         tb_writer.add_scalar('eval/eval_time_sec', duration, step)
+    return sum(loss) / len(loss) if len(loss) > 0 else None
 
 
 def apply_max_norm_regularization(model, config):
@@ -540,10 +550,14 @@ if __name__ == '__main__':
     tb_writer = SummaryWriter(log_dir=run_dir) if is_main_process() else None
 
     epoch = train_dataloader.epoch
-    if 'eval_before_first_step' in config and config['eval_before_first_step'] and not resume_from_checkpoint:
-        evaluate(model_engine, eval_dataloaders, tb_writer, 0, eval_gradient_accumulation_steps)
 
     saver = Saver(model_engine, pipeline_model, train_dataloader, lora_config, run_dir, args, config)
+
+    epoch = train_dataloader.epoch
+
+    if 'eval_before_first_step' in config and config['eval_before_first_step'] and not resume_from_checkpoint:
+        loss = evaluate(model_engine, eval_dataloaders, tb_writer, 0, eval_gradient_accumulation_steps)
+        saver.append_eval_results(loss, save_best=False)
 
     while True:
         gc.collect()
@@ -569,7 +583,8 @@ if __name__ == '__main__':
             tb_writer.add_scalar('train/epoch', step/steps_per_epoch, step)
 
         if step % config['eval_steps'] == 0:
-            evaluate(model_engine, eval_dataloaders, tb_writer, step, eval_gradient_accumulation_steps)
+            loss = evaluate(model_engine, eval_dataloaders, tb_writer, step, eval_gradient_accumulation_steps)
+            saver.append_eval_results(loss)
 
         saver.process_step(step)
 
