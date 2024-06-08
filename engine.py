@@ -15,7 +15,7 @@ from deepspeed.runtime.pipe.module import PipelineModule
 from deepspeed.runtime import utils as ds_utils
 from deepspeed.runtime.pipe.module import LayerSpec
 
-from utils import log
+from utils import eta_str, log
 
 
 def initialize(args=None,
@@ -78,7 +78,7 @@ class CustomPipelineEngine(PipelineEngine):
             if self.global_rank == 0:
                 elapsed = self.timers(TRAIN_BATCH_TIMER).elapsed(reset=True) / 1000.0
                 iter_time = elapsed / self.steps_per_print()
-                eta = iter_time * (self.total_steps - self.global_steps) / 3600
+                eta = iter_time * (self.total_steps - self.global_steps)
                 self.etas.append(eta)
                 while len(self.etas) > 10:
                     self.etas.popleft()
@@ -88,7 +88,7 @@ class CustomPipelineEngine(PipelineEngine):
                     f'loss: {self.agg_train_loss:0.4f} '
                     f'iter time (s): {iter_time:0.3f} '
                     f'samples/sec: {tput:0.3f} '
-                    f'eta (h): {rolling_eta:0.3f}')
+                    f'eta: {eta_str(rolling_eta)} ')
             else:
                 self.timers(TRAIN_BATCH_TIMER).elapsed(reset=True)
 
