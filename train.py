@@ -358,7 +358,8 @@ if __name__ == '__main__':
     # TODO: do we want to do this with cohere models? By default the EOS token is <|END_OF_TURN_TOKEN|>
     # if model_type == 'cohere':
     #     tokenizer.eos_token = '<EOS_TOKEN>'
-    tokenizer.pad_token = tokenizer.eos_token
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
 
     train_data, eval_data_map = load_datasets(config, tokenizer)
 
