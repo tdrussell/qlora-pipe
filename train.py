@@ -340,16 +340,6 @@ if __name__ == '__main__':
 
     deepspeed.init_distributed()
 
-    # if this is a new run, create a new dir for it
-    if not resume_from_checkpoint and is_main_process():
-        run_dir = os.path.join(config['output_dir'], datetime.now(timezone.utc).strftime('%Y%m%d_%H-%M-%S'))
-        os.makedirs(run_dir, exist_ok=True)
-        shutil.copy(args.config, run_dir)
-        shutil.copy(args.deepspeed_config, run_dir)
-    # wait for all processes then get the most recent dir (may have just been created)
-    deepspeed.comm.barrier()
-    run_dir = get_most_recent_run_dir(config['output_dir'])
-
     with open(os.path.join(config['model'], 'config.json')) as f:
         model_config = json.load(f)
         model_type = model_config.get('model_type', 'llama')
@@ -382,6 +372,16 @@ if __name__ == '__main__':
     # for testing
     # train_data = train_data.select(list(range(100)))
     # eval_data = eval_data.select(list(range(50)))
+
+    # if this is a new run, create a new dir for it
+    if not resume_from_checkpoint and is_main_process():
+        run_dir = os.path.join(config['output_dir'], datetime.now(timezone.utc).strftime('%Y%m%d_%H-%M-%S'))
+        os.makedirs(run_dir, exist_ok=True)
+        shutil.copy(args.config, run_dir)
+        shutil.copy(args.deepspeed_config, run_dir)
+    # wait for all processes then get the most recent dir (may have just been created)
+    deepspeed.comm.barrier()
+    run_dir = get_most_recent_run_dir(config['output_dir'])
 
     # Ugly hack so we can move quantized models from GPU to CPU, and back to GPU again without triggering quantization a second time.
     bnb_cuda_old = bitsandbytes.nn.modules.Params4bit.cuda
