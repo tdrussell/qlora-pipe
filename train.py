@@ -254,6 +254,9 @@ def load_pipeline_model_with_lora(config, model_type):
         # NOTE: must use a reentrant checkpointing function for MLP offloading to work.
         if config['activation_checkpointing'] == 'unsloth':
             checkpoint_func = unsloth_utils.unsloth_checkpoint
+        elif config['activation_checkpointing'] == 'cpu':
+            deepspeed.checkpointing.configure(None, checkpoint_in_cpu=True)
+            checkpoint_func = deepspeed.checkpointing.checkpoint
         else:
             checkpoint_func = deepspeed.checkpointing.checkpoint
         pipeline_model = engine.CustomPipelineModule(
