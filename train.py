@@ -37,7 +37,7 @@ parser.add_argument('--config', help='Path to TOML configuration file.')
 parser.add_argument('--local_rank', type=int, default=-1,
                     help='local rank passed from distributed launcher')
 parser.add_argument('--debug_dataset', type=int, help='print out this many training examples and then quit')
-parser.add_argument('--resume_from_checkpoint', action='store_true', help='resume training from the most recent checkpoint')
+parser.add_argument('--resume_from_checkpoint', action='store_true', default=None, help='resume training from the most recent checkpoint')
 parser = deepspeed.add_config_arguments(parser)
 args = parser.parse_args()
 
@@ -333,7 +333,7 @@ if __name__ == '__main__':
     set_config_defaults(config)
 
     resume_from_checkpoint = (
-        args.resume_from_checkpoint if hasattr(args, 'resume_from_checkpoint')
+        args.resume_from_checkpoint if args.resume_from_checkpoint is not None
         else config['resume_from_checkpoint'] if 'resume_from_checkpoint' in config
         else False
     )
