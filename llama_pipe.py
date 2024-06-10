@@ -63,7 +63,7 @@ class LmHeadPipe(nn.Module):
         self.lm_head = lm_head
         self.logit_scale = logit_scale
         if tie_weights:
-            self.orig.weight.original_name = tie_weights
+            self.lm_head.weight.original_name = tie_weights
         loader_util.load_state_dict_into_module(self)
 
     def forward(self, inputs):
