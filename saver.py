@@ -189,7 +189,7 @@ class Saver:
         if step % self.config['save_steps'] == 0:
             self.save_model(f'step{step}')
 
-        pending_save_best_loss = os.path.exists(".pending_save_best_loss")
+        pending_save_best_loss = os.path.exists(os.path.join(self.save_root, ".pending_save_best_loss"))
         if pending_save_best_loss:
             self.save_model('best_loss')
             if is_main_process():
@@ -197,9 +197,7 @@ class Saver:
                     print(f'New best loss: {self.best_loss} from {self.old_best} (Δ{self.old_best - self.best_loss} = {100 * (self.old_best - self.best_loss) / self.old_best:.2f}%)')
                 else:
                     print(f'New best loss: {self.best_loss}')
-                if os.path.exists(os.path.join(self.save_root, 'best_loss.txt')):
-                    os.remove(os.path.join(self.save_root, 'best_loss.txt'))
-                os.rename(".pending_save_best_loss", os.path.join(self.save_root, 'best_loss.txt'))
+                os.replace(os.path.join(self.save_root, 'best_loss'), os.path.join(self.save_root, '.pending_save_best_loss'))
 
         if need_to_checkpoint(self.config):
             self.save_checkpoint(step)
@@ -215,6 +213,6 @@ class Saver:
                 self.old_best = self.best_loss
                 self.best_loss = loss
                 if save_best:
-                    with open(".pending_save_best_loss", "w") as f:
+                    with open(os.path.join(self.save_root, ".pending_save_best_loss"), "w") as f:
                         f.write(str(self.best_loss))
         deepspeed.comm.barrier()
