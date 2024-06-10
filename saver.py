@@ -49,6 +49,14 @@ class Saver:
             'global_step': [],
         }
 
+        # Load best loss from disk, if found, and if a best_loss model dir exists
+        self.best_loss = None
+        best_loss_path = os.path.join(self.save_root, 'best_loss.txt')
+        if os.path.exists(best_loss_path) and os.path.isdir(os.path.join(self.save_root, 'best_loss')):
+            with open(best_loss_path, 'r') as f:
+                self.best_loss = float(f.read())
+            print(f'Loaded best loss from disk: {self.best_loss}')
+
 
     # TODO: this is pretty hacky. Is there a way to get the state_dict from the lora model directly,
     # but still know which layers the given pipeline parallel stage actually trained?
@@ -181,5 +189,30 @@ class Saver:
         if step % self.config['save_steps'] == 0:
             self.save_model(f'step{step}')
 
+        pending_save_best_loss = os.path.exists(os.path.join(self.save_root, ".pending_save_best_loss"))
+        if pending_save_best_loss:
+            self.save_model('best_loss')
+            if is_main_process():
+                if self.old_best is not None:
+                    print(f'New best loss: {self.best_loss} from {self.old_best} (Δ{self.old_best - self.best_loss} = {100 * (self.old_best - self.best_loss) / self.old_best:.2f}%)')
+                else:
+                    print(f'New best loss: {self.best_loss}')
+                os.replace(os.path.join(self.save_root, '.pending_save_best_loss'), os.path.join(self.save_root, 'best_loss.txt'))
+
         if need_to_checkpoint(self.config):
             self.save_checkpoint(step)
+
+
+    def append_eval_results(self, loss, save_best=True):
+        if loss is not None:
+            if self.best_loss is None:
+                print(f"Evaluation loss: {loss}")
+            elif loss >= self.best_loss:
+                print(f"Evaluation loss: {loss} (best: {self.best_loss}, Δ: {self.best_loss - loss} = {100 * (self.best_loss - loss) / self.best_loss:.2f}%)")
+            if self.best_loss is None or loss < self.best_loss:
+                self.old_best = self.best_loss
+                self.best_loss = loss
+                if save_best:
+                    with open(os.path.join(self.save_root, ".pending_save_best_loss"), "w") as f:
+                        f.write(str(self.best_loss))
+        deepspeed.comm.barrier()
