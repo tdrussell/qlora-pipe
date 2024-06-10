@@ -197,7 +197,7 @@ class Saver:
                     print(f'New best loss: {self.best_loss} from {self.old_best} (Δ{self.old_best - self.best_loss} = {100 * (self.old_best - self.best_loss) / self.old_best:.2f}%)')
                 else:
                     print(f'New best loss: {self.best_loss}')
-                os.replace(os.path.join(self.save_root, 'best_loss'), os.path.join(self.save_root, '.pending_save_best_loss'))
+                os.replace(os.path.join(self.save_root, '.pending_save_best_loss'), os.path.join(self.save_root, 'best_loss.txt'))
 
         if need_to_checkpoint(self.config):
             self.save_checkpoint(step)
