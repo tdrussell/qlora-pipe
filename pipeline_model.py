@@ -260,13 +260,15 @@ class LoaderUtil:
         self.device = get_accelerator().device_name(self.local_rank)
 
         index_file = os.path.join(model_path, transformers.utils.SAFE_WEIGHTS_INDEX_NAME)
-        checkpoint_files, checkpoint_metadata = transformers.utils.hub.get_checkpoint_shard_files(
-            model_path,
-            index_file,
-            local_files_only=True
-        )
-        self.checkpoint_files = checkpoint_files
-        self.checkpoint_metadata = checkpoint_metadata
+        if os.path.exists(index_file):
+            checkpoint_files, checkpoint_metadata = transformers.utils.hub.get_checkpoint_shard_files(
+                model_path,
+                index_file,
+                local_files_only=True
+            )
+            self.checkpoint_metadata = checkpoint_metadata
+        else:
+            self.checkpoint_metadata = None
         self.loaded_state_dict = None
 
     def get_partial_state_dict(self, leaf_file):
@@ -296,8 +298,11 @@ class LoaderUtil:
             self.maybe_quantize(module)
         param_renaming_map = {p.original_name: new_name for new_name, p in module.named_parameters()}
         expected_keys = [p.original_name for p in module.parameters()]
-        weight_map = self.checkpoint_metadata['weight_map']
-        needed_checkpoint_files = set(weight_map[key.replace('orig.', '')] for key in expected_keys)
+        if self.checkpoint_metadata is not None:
+            weight_map = self.checkpoint_metadata['weight_map']
+            needed_checkpoint_files = set(weight_map[key.replace('orig.', '')] for key in expected_keys)
+        else:
+            needed_checkpoint_files = ['model.safetensors']
         for checkpoint_file in needed_checkpoint_files:
             state_dict = self.get_partial_state_dict(checkpoint_file)
             renamed_state_dict = {param_renaming_map[k]: v for k, v in state_dict.items() if k in param_renaming_map}
