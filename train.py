@@ -487,6 +487,9 @@ if __name__ == '__main__':
             print(f'WARNING: eval dataset is unusually large compared to eval_steps. We will spend a lot of time evaluating. Lowering eval_size and/or bumping eval_steps is recommended.')
         print()
 
+    # handle Deepspeed optimizer wrapper (e.g. BF16_Optimizer)
+    optimizer = getattr(optimizer, 'optimizer', optimizer)
+
     if 'lr_scheduler' not in config or config['lr_scheduler'] == 'constant' or config['lr_scheduler'] == 'none':
         lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1.0)
     elif config['lr_scheduler'] == 'cosine':

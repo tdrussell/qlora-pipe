@@ -76,7 +76,7 @@ class Saver:
                     if not hasattr(p, 'original_name'):
                         print(f'WARNING: parameter {name} requires_grad but does not have original_name. Not saving it.')
                         continue
-                    partial_state_dict[p.original_name.replace('.default', '').replace('.modules_to_save', '')] = p
+                    partial_state_dict[p.original_name.replace('.default', '').replace('.modules_to_save', '')] = p.detach()
                     if 'save_dtype' in self.config:
                         convert_state_dict_dtype(partial_state_dict, self.config['save_dtype'])
             torch.save(partial_state_dict, os.path.join(tmp_dir, f'state_dict_{stage_id}.bin'))
@@ -101,7 +101,8 @@ class Saver:
             os.makedirs(tmp_dir, exist_ok=False)
         deepspeed.comm.barrier()
         if dp_id == 0:
-            partial_state_dict = {p.original_name: p for p in self.pipeline_model.parameters()}
+            # With BF16_Optimizer, we get pickle errors unless we do p.detach(). I have no idea why.
+            partial_state_dict = {p.original_name: p.detach() for p in self.pipeline_model.parameters()}
             if 'save_dtype' in self.config:
                 convert_state_dict_dtype(partial_state_dict, self.config['save_dtype'])
             torch.save(partial_state_dict, os.path.join(tmp_dir, f'state_dict_{stage_id}.bin'))
