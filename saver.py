@@ -1,9 +1,10 @@
 import glob
 import json
 import os
-import re
 import shutil
 import time
+import sys
+from pathlib import Path
 import deepspeed
 import torch
 import transformers
@@ -186,7 +187,24 @@ class Saver:
 
 
     def process_step(self, step):
-        if step % self.config['save_steps'] == 0:
+        # Look at some simple "signal files" the user can write to save and optionally quit manually
+        should_manually_save = False
+        should_manually_quit = False
+        save_signal_file = Path(self.save_root) / 'save'
+        save_quit_signal_file = Path(self.save_root) / 'save_quit'
+        if save_signal_file.exists() and save_signal_file.is_file():
+            should_manually_save = True
+            deepspeed.comm.barrier()
+            if is_main_process():
+                os.remove(save_signal_file)
+        elif save_quit_signal_file.exists() and save_quit_signal_file.is_file():
+            should_manually_save = True
+            should_manually_quit = True
+            deepspeed.comm.barrier()
+            if is_main_process():
+                os.remove(save_quit_signal_file)
+
+        if step % self.config['save_steps'] == 0 or should_manually_save:
             self.save_model(f'step{step}')
 
         pending_save_best_loss = os.path.exists(os.path.join(self.save_root, ".pending_save_best_loss"))
@@ -199,8 +217,12 @@ class Saver:
                     print(f'New best loss: {self.best_loss}')
                 os.replace(os.path.join(self.save_root, '.pending_save_best_loss'), os.path.join(self.save_root, 'best_loss.txt'))
 
-        if need_to_checkpoint(self.config):
+        if need_to_checkpoint(self.config) or should_manually_save:
             self.save_checkpoint(step)
+
+        if should_manually_quit:
+            print('Manually quitting')
+            sys.exit()
 
 
     def append_eval_results(self, loss, save_best=True):
