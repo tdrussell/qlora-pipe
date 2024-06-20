@@ -111,6 +111,17 @@ You can have multiple datasets. Just add additional `[[datasets]]` entries. When
 ## On sample packing (or the lack thereof)
 Sample packing is not currently implemented. Instead, there is the option `batch_size_tokens`. If this field is set, the batch size in the Deepspeed config file is ignored, and instead the batch size is adjusted dynamically to target a fixed number of tokens per batch, per device. This was easier to implement than sample packing, and does basically the same thing. It is also efficient: if I set batch_size_tokens to a modest 10000 and train a 7B model with the Alpaca dataset, all my 4090s hit their 350W power limit cap. Unless I'm missing something (definitely possible), it seems there is no need to support sample packing.
 
+## Floating point precision
+There are different places you can specify the floating point dtype. `model_weight_dtype` controls the precision of the underlying model weights (for any weights not quantized), and `lora_weight_dtype` is for the lora weights. If you are using quantization, both bnb and hqq have options for the compute dtype as well.
+
+If you are using 16 bit dtypes, floating point roundoff error is a potential problem. For a good overview of the problem and solutions, see [Revisiting Bfloat16 Training](https://arxiv.org/pdf/2010.06192). TLDR: the main source of precision error when training with 16 bit weights is the weight update step: $(p = p + \Delta p * lr)$. When the update is very small compared to the parameter (which is often the case), there can be significant roundoff error, including the update being entirely dropped. Mixed precision training solves this by keeping a master copy of the weights in fp32, and running all optimizer steps in fp32. Kahan summation is another solution when training in full bf16, that keeps an extra bf16 buffer for each parameter to accumulate roundoff errors so that updates are never dropped.
+
+### Okay but how should I configure things?
+ - If unsure, set everything to bf16 and use the adamw_kahan optimizer type. Kahan summation is ESPECIALLY important for full fine tuning. Kahan summation requires an extra 2 bytes per trainable parameter compared to vanilla full bf16 training.
+ - For LoRAs, another option is setting `lora_weight_dtype` to fp32, which also makes all optimizer states fp32.
+ - For LoRAs only, with constant learning rate no lower than 5e-5 or so, I have seen full bf16 training with no Kahan summation mostly match fp32 or bf16 + Kahan.
+ - (more experimental) You may try Deepspeed's bf16 mode, but I personally don't use this. I think this does something like mixed precision, where it wraps the optimizer to keep a master copy of the parameters in fp32, as well as doing gradient accumulation and all optimizer states in fp32. This will use much more memory than full bf16 + Kahan summation.
+
 ## Changelog
 ### 2024-05-19
 **The old config file format will break.** Quantization is configured slightly differently now. Read examples/config_7b.toml. It's only a few lines to change.

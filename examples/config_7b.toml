@@ -118,8 +118,8 @@ bnb_4bit_compute_dtype = 'bfloat16'
 # down_proj = {nbits = 2, group_size = 16, quant_zero = true, quant_scale = true}
 
 [optimizer]
-# AdamW or AdamW8bit
-type = 'AdamW'
+# options: adamw_kahan, AdamW, AdamW8bit
+type = 'adamw_kahan'
 lr = 5e-5
 beta1 = 0.9
 beta2 = 0.99

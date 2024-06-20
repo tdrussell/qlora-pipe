@@ -16,6 +16,7 @@ pyyaml
 tqdm
 triton
 git+https://github.com/mobiusml/hqq
+torch-optimi
 
 # minimum Axolotl dependencies for what we use
 addict

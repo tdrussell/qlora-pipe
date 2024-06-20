@@ -367,13 +367,13 @@ if __name__ == '__main__':
         if is_main_process():
             for i, item in enumerate(iter(train_data)):
                 print('input_ids:')
-                print(item['input_ids'])
+                print(item['input_ids'][:1000])
                 print('decoded input_ids:')
-                print(tokenizer.decode(item['input_ids']))
+                print(tokenizer.decode(item['input_ids'][:1000]))
                 print('attention_mask:')
-                print(item['attention_mask'])
+                print(item['attention_mask'][:1000])
                 print('labels:')
-                print(item['labels'])
+                print(item['labels'][:1000])
                 print('-'*80)
                 if i >= args.debug_dataset-1:
                     break
@@ -416,15 +416,27 @@ if __name__ == '__main__':
             return deepspeed.ops.adam.FusedAdam(
                 model_parameters,
                 lr=lr,
-                betas=(optim_config.get('beta1', 0.9), optim_config.get('beta2', 0.999)),
-                weight_decay=optim_config.get('weight_decay', 0.01)
+                betas=(optim_config.get('beta1', 0.9), optim_config.get('beta2', 0.99)),
+                weight_decay=optim_config.get('weight_decay', 0.01),
+                eps=optim_config.get('eps', 1e-6)
             )
         elif optim_type == 'adamw8bit':
             return bitsandbytes.optim.AdamW8bit(
                 model_parameters,
                 lr=lr,
-                betas=(optim_config.get('beta1', 0.9), optim_config.get('beta2', 0.999)),
-                weight_decay=optim_config.get('weight_decay', 0.01)
+                betas=(optim_config.get('beta1', 0.9), optim_config.get('beta2', 0.99)),
+                weight_decay=optim_config.get('weight_decay', 0.01),
+                eps=optim_config.get('eps', 1e-6)
+            )
+        elif optim_type == 'adamw_kahan':
+            import optimi
+            return optimi.AdamW(
+                model_parameters,
+                lr=lr,
+                betas=(optim_config.get('beta1', 0.9), optim_config.get('beta2', 0.99)),
+                weight_decay=optim_config.get('weight_decay', 0.01),
+                kahan_sum=optim_config.get('kahan_sum', True),
+                eps=optim_config.get('eps', 1e-6)
             )
         else:
             raise NotImplementedError(optim_type)
