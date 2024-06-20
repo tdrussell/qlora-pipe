@@ -123,6 +123,8 @@ If you are using 16 bit dtypes, floating point roundoff error is a potential pro
  - (more experimental) You may try Deepspeed's bf16 mode, but I personally don't use this. I think this does something like mixed precision, where it wraps the optimizer to keep a master copy of the parameters in fp32, as well as doing gradient accumulation and all optimizer states in fp32. This will use much more memory than full bf16 + Kahan summation.
 
 ## Changelog
+### 2024-06-20
+- Add adamw_kahan optimzer type and make it the default in the example.
 ### 2024-05-19
 **The old config file format will break.** Quantization is configured slightly differently now. Read examples/config_7b.toml. It's only a few lines to change.
 - Change how quantization is configured. Quantization is now its own table in the TOML file.
