@@ -7,10 +7,11 @@ from pipeline_model import ComputeMetrics, LayerSpec, PipelineModel, move_data_t
 from utils import DTYPE_MAP
 
 class EmbeddingPipe(nn.Module):
-    def __init__(self, loader_util, orig, attn_implementation, embedding_on_cpu=False):
+    def __init__(self, loader_util, orig, model, embedding_on_cpu=False):
         super().__init__()
         self.orig = orig
-        self.attn_implementation = attn_implementation
+        # The original model object, e.g. LlamaModel. Use a list so the nn.Module isn't registered to this module.
+        self.model = [model]
         self.embedding_on_cpu = embedding_on_cpu
         loader_util.load_state_dict_into_module(self)
 
@@ -21,19 +22,28 @@ class EmbeddingPipe(nn.Module):
             self.orig.to('cpu')
             input_ids = input_ids.to('cpu')
         inputs_embeds = self.orig(input_ids).to(original_device)
-        batch_size, seq_length = input_ids.shape
 
-        if self.attn_implementation == "flash_attention_2":
-            # 2d mask is passed through the layers
-            assert attention_mask is not None
-            assert len(attention_mask.size()) == 2
-        else:
-            # 4d mask is passed through the layers
-            attention_mask = transformers.modeling_attn_mask_utils._prepare_4d_causal_attention_mask(
-                attention_mask, (batch_size, seq_length), inputs_embeds, 0
-            )
+        original_attention_mask = attention_mask
+        past_key_values = None  # always None for training
+        past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
+        cache_position = torch.arange(
+            past_seen_tokens, past_seen_tokens + inputs_embeds.shape[1], device=inputs_embeds.device
+        )
+        if position_ids is None:
+            position_ids = cache_position.unsqueeze(0)
+        attention_mask = self.model[0]._update_causal_mask(
+            attention_mask, inputs_embeds, cache_position, past_key_values, False
+        )
+        if attention_mask is None:
+            # With FA, attention_mask can end up being None. But with deepspeed we can't pass None
+            # between GPUs. So force it back to the original attention_mask.
+            attention_mask = original_attention_mask
 
         hidden_states = inputs_embeds
+        if self.model[0].config.model_type == 'gemma2':
+            normalizer = torch.tensor(self.model[0].config.hidden_size**0.5, dtype=hidden_states.dtype)
+            hidden_states = hidden_states * normalizer
+
         # We have to do this so activation checkpointing with reentrant checkpoint function (the default) works.
         # We could just use non-reentrant instead, but that has some weird bug with flash attn where the memory usage is very high.
         hidden_states.requires_grad_(True)
@@ -69,6 +79,25 @@ class LmHeadPipe(nn.Module):
     def forward(self, inputs):
         hidden_states, labels = inputs
         return self.lm_head(hidden_states*self.logit_scale), labels
+
+
+class Gemma2LmHeadPipe(nn.Module):
+    def __init__(self, loader_util, lm_head, model_config, tie_weights=None):
+        super().__init__()
+        self.lm_head = lm_head
+        self.model_config = model_config
+        if tie_weights:
+            self.lm_head.weight.original_name = tie_weights
+        loader_util.load_state_dict_into_module(self)
+
+    def forward(self, inputs):
+        hidden_states, labels = inputs
+        logits = self.lm_head(hidden_states)
+        if self.model_config.final_logit_softcapping is not None:
+            logits = logits / self.model_config.final_logit_softcapping
+            logits = torch.tanh(logits)
+            logits = logits * self.model_config.final_logit_softcapping
+        return logits, labels
 
 
 class LlamaDecoderLayerPipe(nn.Module):
@@ -154,13 +183,13 @@ class Phi3DecoderLayerPipe(nn.Module):
 # positional argument. We inherit PipelineModel first, but call LlamaForCausalLM init first,
 # and make sure PipelineModel doesn't have a super().__init__() call.
 class LlamaForCausalLMPipe(PipelineModel, transformers.LlamaForCausalLM):
-    def __init__(self, config, quantization_config, **kwargs):
+    def __init__(self, config, quantization_config):
         model_config = transformers.LlamaConfig.from_pretrained(config['model'])
         model_config._attn_implementation = 'flash_attention_2'
         torch.set_default_dtype(DTYPE_MAP[config.get('model_weight_dtype', 'bfloat16')])
         with accelerate.init_empty_weights():
             transformers.LlamaForCausalLM.__init__(self, model_config)
-            PipelineModel.__init__(self, config, quantization_config, **kwargs)
+            PipelineModel.__init__(self, config, quantization_config, model_config)
         torch.set_default_dtype(torch.float32)
 
     def to_layer_specs(self):
@@ -180,7 +209,7 @@ class LlamaForCausalLMPipe(PipelineModel, transformers.LlamaForCausalLM):
                 EmbeddingPipe,
                 self.loader_util,
                 self.model.embed_tokens,
-                self.model.config._attn_implementation,
+                self.model,
                 embedding_on_cpu=not self.train_config['full_fine_tune']
             ),
         ]
@@ -193,13 +222,13 @@ class LlamaForCausalLMPipe(PipelineModel, transformers.LlamaForCausalLM):
 
 
 class Qwen2ForCausalLMPipe(PipelineModel, transformers.Qwen2ForCausalLM):
-    def __init__(self, config, quantization_config, **kwargs):
+    def __init__(self, config, quantization_config):
         model_config = transformers.Qwen2Config.from_pretrained(config['model'])
         model_config._attn_implementation = 'flash_attention_2'
         torch.set_default_dtype(DTYPE_MAP[config.get('model_weight_dtype', 'bfloat16')])
         with accelerate.init_empty_weights():
             transformers.Qwen2ForCausalLM.__init__(self, model_config)
-            PipelineModel.__init__(self, config, quantization_config, **kwargs)
+            PipelineModel.__init__(self, config, quantization_config, model_config)
         torch.set_default_dtype(torch.float32)
 
     def to_layer_specs(self):
@@ -219,7 +248,7 @@ class Qwen2ForCausalLMPipe(PipelineModel, transformers.Qwen2ForCausalLM):
                 EmbeddingPipe,
                 self.loader_util,
                 self.model.embed_tokens,
-                self.model.config._attn_implementation,
+                self.model,
                 embedding_on_cpu=not self.train_config['full_fine_tune']
             ),
         ]
@@ -231,13 +260,13 @@ class Qwen2ForCausalLMPipe(PipelineModel, transformers.Qwen2ForCausalLM):
         return result
 
 class CohereForCausalLMPipe(PipelineModel, transformers.CohereForCausalLM):
-    def __init__(self, config, quantization_config, **kwargs):
+    def __init__(self, config, quantization_config):
         model_config = transformers.CohereConfig.from_pretrained(config['model'])
         model_config._attn_implementation = 'flash_attention_2'
         torch.set_default_dtype(DTYPE_MAP[config.get('model_weight_dtype', 'bfloat16')])
         with accelerate.init_empty_weights():
             transformers.CohereForCausalLM.__init__(self, model_config)
-            PipelineModel.__init__(self, config, quantization_config, **kwargs)
+            PipelineModel.__init__(self, config, quantization_config, model_config)
         torch.set_default_dtype(torch.float32)
 
     def to_layer_specs(self):
@@ -261,7 +290,7 @@ class CohereForCausalLMPipe(PipelineModel, transformers.CohereForCausalLM):
                 EmbeddingPipe,
                 self.loader_util,
                 self.model.embed_tokens,
-                self.model.config._attn_implementation,
+                self.model,
                 embedding_on_cpu=embedding_on_cpu,
                 _estimated_size=1 if embedding_on_cpu else embedding_relative_size,
             ),
@@ -269,26 +298,19 @@ class CohereForCausalLMPipe(PipelineModel, transformers.CohereForCausalLM):
         for block in self.model.layers:
             result.append(LayerSpec(LlamaDecoderLayerPipe, self.loader_util, block))
         result.append(LayerSpec(LlamaRMSNormPipe, self.loader_util, self.model.norm, _estimated_size=0))
-        result.append(LayerSpec(
-            LmHeadPipe,
-            self.loader_util,
-            self.lm_head,
-            logit_scale=self.logit_scale,
-            tie_weights='model.embed_tokens.weight',
-            _estimated_size=embedding_relative_size
-        ))
-        result.append(LayerSpec(ComputeMetrics, focal_loss_gamma=self.focal_loss_gamma))
+        result.append(LayerSpec(LmHeadPipe, self.loader_util, self.lm_head, logit_scale=self.logit_scale, tie_weights='model.embed_tokens.weight'))
+        result.append(LayerSpec(ComputeMetrics, focal_loss_gamma=self.focal_loss_gamma, _estimated_size=embedding_relative_size))
         return result
 
 
 class Phi3ForCausalLMPipe(PipelineModel, transformers.Phi3ForCausalLM):
-    def __init__(self, config, quantization_config, **kwargs):
+    def __init__(self, config, quantization_config):
         model_config = transformers.Phi3Config.from_pretrained(config['model'])
         model_config._attn_implementation = 'flash_attention_2'
         torch.set_default_dtype(DTYPE_MAP[config.get('model_weight_dtype', 'bfloat16')])
         with accelerate.init_empty_weights():
             transformers.Phi3ForCausalLM.__init__(self, model_config)
-            PipelineModel.__init__(self, config, quantization_config, **kwargs)
+            PipelineModel.__init__(self, config, quantization_config, model_config)
         torch.set_default_dtype(torch.float32)
 
     def to_layer_specs(self):
@@ -308,7 +330,7 @@ class Phi3ForCausalLMPipe(PipelineModel, transformers.Phi3ForCausalLM):
                 EmbeddingPipe,
                 self.loader_util,
                 self.model.embed_tokens,
-                self.model.config._attn_implementation,
+                self.model,
                 embedding_on_cpu=not self.train_config['full_fine_tune']
             ),
         ]
@@ -317,4 +339,49 @@ class Phi3ForCausalLMPipe(PipelineModel, transformers.Phi3ForCausalLM):
         result.append(LayerSpec(LlamaRMSNormPipe, self.loader_util, self.model.norm, _estimated_size=0))
         result.append(LayerSpec(LmHeadPipe, self.loader_util, self.lm_head, _estimated_size=0))
         result.append(LayerSpec(ComputeMetrics, focal_loss_gamma=self.focal_loss_gamma))
+        return result
+
+class Gemma2ForCausalLMPipe(PipelineModel, transformers.Gemma2ForCausalLM):
+    def __init__(self, config, quantization_config):
+        model_config = transformers.Gemma2Config.from_pretrained(config['model'])
+        # TODO: change this when Gemma works with other attn implementations
+        model_config._attn_implementation = 'eager'
+        torch.set_default_dtype(DTYPE_MAP[config.get('model_weight_dtype', 'bfloat16')])
+        with accelerate.init_empty_weights():
+            transformers.Gemma2ForCausalLM.__init__(self, model_config)
+            PipelineModel.__init__(self, config, quantization_config, model_config)
+        torch.set_default_dtype(torch.float32)
+
+    def to_layer_specs(self):
+        # the embedding table for this model is huge; load balance it better with some heuristics
+        # this value optimized for LoRA, pipeline_stages=2
+        embedding_relative_size = 8
+
+        def initial_layer(inputs):
+            input_ids, attention_mask, labels = inputs
+            batch_size, seq_length = input_ids.shape[:2]
+            device = input_ids.device
+            position_ids = torch.arange(
+                0, seq_length, dtype=torch.long, device=device
+            )
+            position_ids = position_ids.unsqueeze(0)
+            return input_ids, attention_mask, position_ids, labels
+
+        embedding_on_cpu = not self.train_config['full_fine_tune']
+        result = [
+            initial_layer,
+            LayerSpec(
+                EmbeddingPipe,
+                self.loader_util,
+                self.model.embed_tokens,
+                self.model,
+                embedding_on_cpu=embedding_on_cpu,
+                _estimated_size=1 if embedding_on_cpu else embedding_relative_size,
+            ),
+        ]
+        for block in self.model.layers:
+            result.append(LayerSpec(LlamaDecoderLayerPipe, self.loader_util, block))
+        result.append(LayerSpec(LlamaRMSNormPipe, self.loader_util, self.model.norm, _estimated_size=0))
+        result.append(LayerSpec(Gemma2LmHeadPipe, self.loader_util, self.lm_head, self.config, tie_weights='model.embed_tokens.weight'))
+        result.append(LayerSpec(ComputeMetrics, focal_loss_gamma=self.focal_loss_gamma, _estimated_size=embedding_relative_size))
         return result

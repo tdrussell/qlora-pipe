@@ -19,7 +19,7 @@ That being said, if something doesn't work right, or you would like it to suppor
 - Useful metrics logged to Tensorboard
 - Ability to specify a separate, fixed evaluation dataset
 - Train on multiple datasets simultaneously, with different sampling ratios per dataset
-- Models currently supported: Llama, Mistral, Mixtral, Qwen-1.5, Cohere (Command R), Phi-3 (mini and medium)
+- Models currently supported: Llama, Mistral, Mixtral, Qwen-1.5, Cohere (Command R), Phi-3 (mini and medium), Gemma-2
 
 ## Installing
 Clone the repository:
@@ -123,6 +123,8 @@ If you are using 16 bit dtypes, floating point roundoff error is a potential pro
  - (more experimental) You may try Deepspeed's bf16 mode, but I personally don't use this. I think this does something like mixed precision, where it wraps the optimizer to keep a master copy of the parameters in fp32, as well as doing gradient accumulation and all optimizer states in fp32. This will use much more memory than full bf16 + Kahan summation.
 
 ## Changelog
+### 2024-07-02
+- Add Gemma-2 support.
 ### 2024-06-20
 - Add adamw_kahan optimzer type and make it the default in the example.
 ### 2024-05-19

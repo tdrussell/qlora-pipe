@@ -114,7 +114,9 @@ class ComputeMetrics(nn.Module):
 
 class PipelineModel(nn.Module):
 
-    def __init__(self, config, quantization_config):
+    def __init__(self, config, quantization_config, model_config):
+        if config['full_fine_tune'] and model_config.tie_word_embeddings:
+            raise NotImplementedError('FFT is not supported for models with tied embeddings')
         self.train_config = config
         self.modules_to_not_quantize = get_keys_to_not_convert(self)
         self.loader_util = LoaderUtil(config['model'], quantization_config, self.modules_to_not_quantize)

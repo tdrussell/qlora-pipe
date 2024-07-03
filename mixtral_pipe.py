@@ -165,13 +165,13 @@ class MixtralComputeMetrics(ComputeMetrics):
 
 
 class MixtralForCausalLMPipe(PipelineModel, transformers.MixtralForCausalLM):
-    def __init__(self, config, quantization_config, **kwargs):
+    def __init__(self, config, quantization_config):
         model_config = transformers.MixtralConfig.from_pretrained(config['model'])
         model_config._attn_implementation = 'flash_attention_2'
         torch.set_default_dtype(DTYPE_MAP[config.get('model_weight_dtype', 'bfloat16')])
         with accelerate.init_empty_weights():
             transformers.MixtralForCausalLM.__init__(self, model_config)
-            PipelineModel.__init__(self, config, quantization_config, **kwargs)
+            PipelineModel.__init__(self, config, quantization_config, model_config)
         torch.set_default_dtype(torch.float32)
         self.load_balancing_loss_coef = config.get('load_balancing_loss_coef', None)
         self.num_experts_to_offload = self.num_experts
