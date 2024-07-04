@@ -33,6 +33,10 @@ def utfplot(eval_loss):
     fig.set_x_limits(min_=0)
     fig.x_label = 'Epoch'
     fig.y_label = 'Evaluation Loss'
-    fig.plot(range(1, len(eval_loss) + 1), eval_loss, label='Eval Loss')
+
+    for i in range(1, len(eval_loss)):
+        color = "red" if eval_loss[i] > eval_loss[i - 1] else "green"
+        fig.plot([i-1,i], eval_loss[i-1:i+1], lc=color)
+
     # Print the plot
     print(fig.show())
