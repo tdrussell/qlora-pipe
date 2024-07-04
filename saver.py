@@ -10,7 +10,7 @@ import torch
 import transformers
 
 from safetensors.torch import save_file
-from utils import is_main_process, DTYPE_MAP
+from utils import is_main_process, DTYPE_MAP, utfplot
 
 
 last_checkpoint_time = None
@@ -37,6 +37,7 @@ def convert_state_dict_dtype(state_dict, dtype):
 
 class Saver:
     def __init__(self, model_engine, pipeline_model, train_dataloader, lora_config, save_root, args, config):
+        self.loss_history = []
         self.model_engine = model_engine
         self.pipeline_model = pipeline_model
         self.train_dataloader = train_dataloader
@@ -57,6 +58,7 @@ class Saver:
             with open(best_loss_path, 'r') as f:
                 self.best_loss = float(f.read())
             print(f'Loaded best loss from disk: {self.best_loss}')
+            self.loss_history.append(self.best_loss)
 
 
     # TODO: this is pretty hacky. Is there a way to get the state_dict from the lora model directly,
@@ -238,4 +240,6 @@ class Saver:
                 if save_best:
                     with open(os.path.join(self.save_root, ".pending_save_best_loss"), "w") as f:
                         f.write(str(self.best_loss))
+            self.loss_history.append(loss)
+            utfplot(self.loss_history)
         deepspeed.comm.barrier()

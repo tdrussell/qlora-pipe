@@ -18,3 +18,21 @@ def eta_str(eta):
     if eta > 3600:
         return f'{eta // 3600}h{(eta % 3600) // 60}m'
     return f'{eta // 60}m{eta % 60}s' if eta > 60 else f'{eta}s'
+
+def utfplot(eval_loss):
+    try:
+        import plotille
+    except ImportError:
+        # Skipping plots
+        return
+
+    # Create the plot
+    fig = plotille.Figure()
+    fig.width = 60
+    fig.height = 20
+    fig.set_x_limits(min_=0)
+    fig.x_label = 'Epoch'
+    fig.y_label = 'Evaluation Loss'
+    fig.plot(range(1, len(eval_loss) + 1), eval_loss, label='Eval Loss')
+    # Print the plot
+    print(fig.show())
