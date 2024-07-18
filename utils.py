@@ -19,7 +19,7 @@ def eta_str(eta):
         return f'{eta // 3600}h{(eta % 3600) // 60}m'
     return f'{eta // 60}m{eta % 60}s' if eta > 60 else f'{eta}s'
 
-def utfplot(eval_loss):
+def utfplot(eval_loss, eval_steps=100, unseen_steps=0):
     try:
         import plotille
     except ImportError:
@@ -30,13 +30,14 @@ def utfplot(eval_loss):
     fig = plotille.Figure()
     fig.width = 60
     fig.height = 20
-    fig.set_x_limits(min_=0)
-    fig.x_label = 'Epoch'
+    fig.set_x_limits(min_=unseen_steps)
+    fig.x_label = 'Step'
     fig.y_label = 'Evaluation Loss'
 
     for i in range(1, len(eval_loss)):
+        eval_step = i * eval_steps + unseen_steps
         color = "red" if eval_loss[i] > eval_loss[i - 1] else "green"
-        fig.plot([i-1,i], eval_loss[i-1:i+1], lc=color)
+        fig.plot([eval_step - eval_steps,eval_step], eval_loss[i-1:i+1], lc=color)
 
     # Print the plot
     print(fig.show())

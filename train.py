@@ -568,7 +568,7 @@ if __name__ == '__main__':
 
     epoch = train_dataloader.epoch
 
-    saver = Saver(model_engine, pipeline_model, train_dataloader, lora_config, run_dir, args, config)
+    saver = Saver(model_engine, pipeline_model, train_dataloader, lora_config, run_dir, args, config, first_step=step)
 
     epoch = train_dataloader.epoch
 

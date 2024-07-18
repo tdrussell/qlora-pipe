@@ -36,7 +36,7 @@ def convert_state_dict_dtype(state_dict, dtype):
 
 
 class Saver:
-    def __init__(self, model_engine, pipeline_model, train_dataloader, lora_config, save_root, args, config):
+    def __init__(self, model_engine, pipeline_model, train_dataloader, lora_config, save_root, args, config, first_step):
         self.loss_history = []
         self.model_engine = model_engine
         self.pipeline_model = pipeline_model
@@ -50,6 +50,8 @@ class Saver:
             'step': [],
             'global_step': [],
         }
+        self.eval_steps = config['eval_steps']
+        self.unseen_steps = first_step - 1
 
         # Load best loss from disk, if found, and if a best_loss model dir exists
         self.best_loss = None
@@ -241,5 +243,5 @@ class Saver:
                     with open(os.path.join(self.save_root, ".pending_save_best_loss"), "w") as f:
                         f.write(str(self.best_loss))
             self.loss_history.append(loss)
-            utfplot(self.loss_history)
+            utfplot(self.loss_history, self.eval_steps, self.unseen_steps)
         deepspeed.comm.barrier()
