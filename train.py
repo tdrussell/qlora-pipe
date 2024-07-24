@@ -418,34 +418,24 @@ if __name__ == '__main__':
         optim_config = config['optimizer']
         lr = optim_config['lr']
         optim_type = optim_config['type'].lower()
+        optimizer_kwargs = {
+            "params": model_parameters,
+            "lr": lr,
+            "betas": (optim_config.get('beta1', 0.9), optim_config.get('beta2', 0.99)),
+            "weight_decay": optim_config.get('weight_decay', 0.01),
+            "eps": optim_config.get('eps', 1e-6)
+        }
         if optim_type == 'adamw':
-            return deepspeed.ops.adam.FusedAdam(
-                model_parameters,
-                lr=lr,
-                betas=(optim_config.get('beta1', 0.9), optim_config.get('beta2', 0.99)),
-                weight_decay=optim_config.get('weight_decay', 0.01),
-                eps=optim_config.get('eps', 1e-6)
-            )
+            optimizer_cls = deepspeed.ops.adam.FusedAdam
         elif optim_type == 'adamw8bit':
-            return bitsandbytes.optim.AdamW8bit(
-                model_parameters,
-                lr=lr,
-                betas=(optim_config.get('beta1', 0.9), optim_config.get('beta2', 0.99)),
-                weight_decay=optim_config.get('weight_decay', 0.01),
-                eps=optim_config.get('eps', 1e-6)
-            )
+            optimizer_cls = bitsandbytes.optim.AdamW8bit
         elif optim_type == 'adamw_kahan':
             import optimi
-            return optimi.AdamW(
-                model_parameters,
-                lr=lr,
-                betas=(optim_config.get('beta1', 0.9), optim_config.get('beta2', 0.99)),
-                weight_decay=optim_config.get('weight_decay', 0.01),
-                kahan_sum=optim_config.get('kahan_sum', True),
-                eps=optim_config.get('eps', 1e-6)
-            )
+            optimizer_cls = optimi.AdamW
+            optimizer_kwargs['kahan_sum'] = optim_config.get('kahan_sum', True)
         else:
             raise NotImplementedError(optim_type)
+        return optimizer_cls(**optimizer_kwargs)
 
     model_engine, optimizer = engine.initialize(
         args=args,
