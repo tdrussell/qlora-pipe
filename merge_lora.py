@@ -51,7 +51,10 @@ print('Copying unmergable files to output')
 for filepath in input_path.glob('*'):
     if filepath in shards:
         continue
-    print(f'copying {Path(filepath).name} to output')
+    filepath = Path(filepath)
+    if filepath.is_dir():
+        continue
+    print(f'copying {filepath.name} to output')
     shutil.copy(filepath, output_path)
 
 print('Merging and copying state_dict to output')

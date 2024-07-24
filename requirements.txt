@@ -15,7 +15,7 @@ flash-attn
 pyyaml
 tqdm
 triton
-git+https://github.com/mobiusml/hqq
+hqq
 torch-optimi
 
 # minimum Axolotl dependencies for what we use

@@ -181,6 +181,8 @@ def apply_max_norm_regularization(model, config):
 
     if len(norms) > 0:
         norms = torch.tensor(norms, dtype=torch.float32)
+        if torch.any(torch.isnan(norms)):
+            raise RuntimeError(f'NaN detected in norms, probably some/all weights are NaN')
         avg_norm = sum(norms) / len(norms)
         max_norm = max(norms)
     else:
@@ -237,7 +239,7 @@ def load_pipeline_model_with_lora(config, model_type):
     else:
         quantization_config = None
 
-    if model_type == 'llama' or model_type == 'mistral':
+    if model_type == 'llama':
         model = llama_pipe.LlamaForCausalLMPipe(config, quantization_config=quantization_config)
     elif model_type == 'mixtral':
         model = mixtral_pipe.MixtralForCausalLMPipe(config, quantization_config=quantization_config)
@@ -249,6 +251,8 @@ def load_pipeline_model_with_lora(config, model_type):
         model = llama_pipe.Phi3ForCausalLMPipe(config, quantization_config=quantization_config)
     elif model_type == 'gemma2':
         model = llama_pipe.Gemma2ForCausalLMPipe(config, quantization_config=quantization_config)
+    elif model_type == 'mistral':
+        model = llama_pipe.MistralForCausalLMPipe(config, quantization_config=quantization_config)
     else:
         raise NotImplementedError()
 

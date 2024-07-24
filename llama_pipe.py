@@ -31,9 +31,14 @@ class EmbeddingPipe(nn.Module):
         )
         if position_ids is None:
             position_ids = cache_position.unsqueeze(0)
-        attention_mask = self.model[0]._update_causal_mask(
-            attention_mask, inputs_embeds, cache_position, past_key_values, False
-        )
+        if self.model[0].config.model_type == 'mistral':
+            attention_mask = self.model[0]._update_causal_mask(
+                attention_mask, inputs_embeds, cache_position, past_key_values, False, False
+            )
+        else:
+            attention_mask = self.model[0]._update_causal_mask(
+                attention_mask, inputs_embeds, cache_position, past_key_values, False
+            )
         if attention_mask is None:
             # With FA, attention_mask can end up being None. But with deepspeed we can't pass None
             # between GPUs. So force it back to the original attention_mask.
@@ -384,4 +389,43 @@ class Gemma2ForCausalLMPipe(PipelineModel, transformers.Gemma2ForCausalLM):
         result.append(LayerSpec(LlamaRMSNormPipe, self.loader_util, self.model.norm, _estimated_size=0))
         result.append(LayerSpec(Gemma2LmHeadPipe, self.loader_util, self.lm_head, self.config, tie_weights='model.embed_tokens.weight'))
         result.append(LayerSpec(ComputeMetrics, focal_loss_gamma=self.focal_loss_gamma, _estimated_size=embedding_relative_size))
+        return result
+
+
+class MistralForCausalLMPipe(PipelineModel, transformers.MistralForCausalLM):
+    def __init__(self, config, quantization_config):
+        model_config = transformers.MistralConfig.from_pretrained(config['model'])
+        model_config._attn_implementation = 'flash_attention_2'
+        torch.set_default_dtype(DTYPE_MAP[config.get('model_weight_dtype', 'bfloat16')])
+        with accelerate.init_empty_weights():
+            transformers.MistralForCausalLM.__init__(self, model_config)
+            PipelineModel.__init__(self, config, quantization_config, model_config)
+        torch.set_default_dtype(torch.float32)
+
+    def to_layer_specs(self):
+        def initial_layer(inputs):
+            input_ids, attention_mask, labels = inputs
+            batch_size, seq_length = input_ids.shape[:2]
+            device = input_ids.device
+            position_ids = torch.arange(
+                0, seq_length, dtype=torch.long, device=device
+            )
+            position_ids = position_ids.unsqueeze(0)
+            return input_ids, attention_mask, position_ids, labels
+
+        result = [
+            initial_layer,
+            LayerSpec(
+                EmbeddingPipe,
+                self.loader_util,
+                self.model.embed_tokens,
+                self.model,
+                embedding_on_cpu=not self.train_config['full_fine_tune']
+            ),
+        ]
+        for block in self.model.layers:
+            result.append(LayerSpec(LlamaDecoderLayerPipe, self.loader_util, block))
+        result.append(LayerSpec(LlamaRMSNormPipe, self.loader_util, self.model.norm, _estimated_size=0))
+        result.append(LayerSpec(LmHeadPipe, self.loader_util, self.lm_head, _estimated_size=0))
+        result.append(LayerSpec(ComputeMetrics, focal_loss_gamma=self.focal_loss_gamma))
         return result
