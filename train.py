@@ -415,7 +415,6 @@ if __name__ == '__main__':
     parameters_to_train = [p for p in pipeline_model.parameters() if p.requires_grad]
 
     def get_optimizer(model_parameters):
-        breakpoint()
         optim_config = config['optimizer']
         lr = optim_config['lr']
         optim_type = optim_config['type'].lower()
@@ -438,6 +437,9 @@ if __name__ == '__main__':
             raise NotImplementedError(optim_type)
         if optim_config.get('use_loraplus', False):
             loraplus_lr_ratio = optim_config.get('loraplus_lr_ratio', 16)
+            # TODO: handle params being thrown out here; why is it included in the first place?
+            # delete 'params' from optimizer_kwargs
+            del optimizer_kwargs['params']
             return create_loraplus_optimizer(
                 model=pipeline_model,
                 optimizer_cls=optimizer_cls,
