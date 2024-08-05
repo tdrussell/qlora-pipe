@@ -40,8 +40,17 @@ batch_size_tokens = 10000
 # Performance settings
 pipeline_stages = 1  # number of pipeline parallel stages, must evenly divide the number of GPUs you launch the script with
 logging_steps = 10  # how often to log in Tensorboard
-eval_steps = 100
-save_steps = 200
+
+# eval_proportion (float): How much time we should be spending doing evaluation vs training, between 0.0 and 0.10 or so.
+# This auto-calculates the eval_steps value, which must be commented out or removed if using eval proportion.
+eval_proportion = 0.05
+#eval_steps = 100
+
+# save_after_evals (numeric): How often we should save, given in number of evals.
+# Sets save_steps to eval_steps * save_after_evals.
+# Requires that save_steps is commented out or removed.
+save_after_evals = 2
+#save_steps = 200
 checkpoint_every_n_minutes = 60
 eval_before_first_step = true  # do an eval before any training happens
 # dtype to load the underlying model weights in

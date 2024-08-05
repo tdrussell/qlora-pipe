@@ -488,21 +488,39 @@ if __name__ == '__main__':
     steps_per_epoch = len(train_dataloader) // model_engine.gradient_accumulation_steps()
     model_engine.total_steps = steps_per_epoch * config['epochs']
 
+    # Determine train vs eval time spent
+    eval_data_length = sum([len(eval_data) for eval_data in eval_data_map.values()])
+    train_data_length = len(train_data)
+    relative_train_time = train_data_length * 3
+
+    if 'eval_proportion' in config:
+        if 'eval_steps' in config:
+            raise ValueError("Can't use both eval_steps and eval_proportion at the same time. Pick one.")
+        eval_proportion = config['eval_proportion']
+        eval_steps = steps_per_epoch * ((1 - eval_proportion) * eval_data_length) / (eval_proportion * relative_train_time)
+        eval_steps = max(10, int(round(eval_steps / 10) * 10))  # round to a number that ends in a zero (6..15 = 10, 16..25 = 20, ...)
+        config['eval_steps'] = eval_steps
+
+    if 'save_after_evals' in config:
+        if 'save_steps' in config:
+            raise ValueError("Can't use both save_steps and save_after_evals at the same time. Pick one.")
+        save_after_evals = config['save_after_evals']
+        config['save_steps'] = max(10, int(save_after_evals * config['eval_steps']))
+        if is_main_process() and config['save_steps'] < 50:
+            print(f"WARNING: unusually low save_steps value: {config['save_steps']}. Is save_after_evals = {config['save_after_evals']} correct?")
+
     if is_main_process():
         # Warn if eval dataset is unusually large compared to the eval steps
-        eval_data_length = sum([len(eval_data) for eval_data in eval_data_map.values()])
-        train_data_length = len(train_data)
         evals_per_epoch = steps_per_epoch / config['eval_steps']
         relative_eval_time = evals_per_epoch * eval_data_length
         # train step very roughly 3 times slower due to backprop + usually activation checkpointing is enabled
-        relative_train_time = train_data_length * 3
         # Expect <=15% of our time spent evaluating vs training
         fraction_evaling = relative_eval_time / (relative_eval_time + relative_train_time)
         print()
         print(f'eval_data_length: {eval_data_length}, eval_steps: {config["eval_steps"]}; evals per epoch: {evals_per_epoch}. '
               f'We will be spending approximately {fraction_evaling*100:.2f}% of our time evaluating.')
         if fraction_evaling > 0.15:
-            print(f'WARNING: eval dataset is unusually large compared to eval_steps. We will spend a lot of time evaluating. Lowering eval_size and/or bumping eval_steps is recommended.')
+            print('WARNING: eval dataset is unusually large compared to eval_steps. We will spend a lot of time evaluating. Lowering eval_size and/or bumping eval_steps is recommended.')
         print()
 
     # handle Deepspeed optimizer wrapper (e.g. BF16_Optimizer)
