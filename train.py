@@ -25,7 +25,7 @@ from hqq.core import quantize as hqq_quantize
 from dataset_utils import load_datasets
 import dataloader
 from saver import Saver
-from utils import is_main_process, DTYPE_MAP
+from utils import eta_str, is_main_process, DTYPE_MAP
 import engine
 import llama_pipe
 import mixtral_pipe
@@ -130,8 +130,6 @@ def evaluate_single(model_engine, name, eval_dataloader, tb_writer, step, eval_g
 
 
 def evaluate(model_engine, eval_dataloaders, tb_writer, step, eval_gradient_accumulation_steps):
-    if is_main_process():
-        print('Running eval')
     start = time.time()
     loss = []
     for name, eval_dataloader in eval_dataloaders.items():
@@ -598,6 +596,7 @@ if __name__ == '__main__':
         loss = evaluate(model_engine, eval_dataloaders, tb_writer, 0, eval_gradient_accumulation_steps)
         saver.append_eval_results(loss, save_best=False)
 
+    trainmark = time.time()
     while True:
         gc.collect()
         torch.cuda.empty_cache()
@@ -622,7 +621,17 @@ if __name__ == '__main__':
             tb_writer.add_scalar('train/epoch', step/steps_per_epoch, step)
 
         if step % config['eval_steps'] == 0:
+            if is_main_process():
+                now = time.time()
+                trained_time = now - trainmark
+                trainmark = now
+                print(f"Trained for {eta_str(trained_time)}. Running eval")
             loss = evaluate(model_engine, eval_dataloaders, tb_writer, step, eval_gradient_accumulation_steps)
+            if is_main_process():
+                now = time.time()
+                eval_time = now - trainmark
+                trainmark = now
+                print(f"Eval took {eta_str(eval_time)}. Eval vs training: {100 * eval_time / trained_time:.2f}%")
             saver.append_eval_results(loss)
 
         saver.process_step(step)
