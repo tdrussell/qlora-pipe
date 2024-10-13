@@ -1,6 +1,6 @@
 # Paths
-model = '/data2/models/Mistral-7B-v0.1'
-output_dir = '/data/training_runs/mistral_7b_example'
+model = '/data2/models/Meta-Llama-3.1-8B'
+output_dir = '/data/training_runs/llama3_8b_example'
 
 # Lora configuration
 # can use full_fine_tune=true and no quantization to train the whole model instead of a LoRA
