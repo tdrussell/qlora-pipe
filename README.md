@@ -41,9 +41,7 @@ conda create -n training python=3.12
 conda activate training
 ```
 
-Install Pytorch **NIGHTLY** version (if before 2.4): https://pytorch.org/get-started/locally/
-
-Until Pytorch is at 2.4, HQQ quantization requires Pytorch nightly if using Python 3.12, because of torch.compile().
+Install Pytorch: https://pytorch.org/get-started/locally/
 
 Install cuda toolkit (make sure it matches the cuda version you used for Pytorch), e.g.:
 ```
