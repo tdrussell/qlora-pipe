@@ -313,9 +313,8 @@ class LoaderUtil:
             transformers.modeling_utils._load_state_dict_into_meta_model(
                 module,
                 renamed_state_dict,
-                list(renamed_state_dict.keys()),
                 '',
-                [name for name, p in module.named_parameters()]
+                list(renamed_state_dict.keys()),
             )
 
         module.to(self.device)
