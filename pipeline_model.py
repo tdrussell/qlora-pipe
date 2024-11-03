@@ -43,13 +43,13 @@ def set_data(module, data):
 
 def entropy_fn(logits, logit_scale=0):
     result = []
-    # There is a very wide range of chuck sizes that cause no increase in memory reported by
+    # There is a very wide range of chunk sizes that cause no increase in memory reported by
     # nvidia-smi (Torch re-using blocks of memory?). If you try to compute it as one tensor,
     # memory usage is huge. Chuck size of 128 seems good enough for now.
-    for logits_chuck in torch.split(logits, 128):
+    for logits_chunk in torch.split(logits, 128):
         if logit_scale != 0:
             logits_chunk = logit_scale * logits_chunk
-        result.append(torch.distributions.Categorical(logits=logits_chuck).entropy())
+        result.append(torch.distributions.Categorical(logits=logits_chunk).entropy())
     return torch.cat(result).float()
 
 
