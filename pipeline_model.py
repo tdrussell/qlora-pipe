@@ -77,9 +77,11 @@ class LayerSpec(ds_pipe_module.LayerSpec):
 
 
 class ComputeMetrics(nn.Module):
-    def __init__(self, focal_loss_gamma=0):
+    def __init__(self, logit_scale=0, focal_loss_gamma=0, use_focal_loss_star=False):
         super().__init__()
+        self.logit_scale = logit_scale
         self.focal_loss_gamma = focal_loss_gamma
+        self.use_focal_loss_star = use_focal_loss_star
 
     def forward(self, inputs):
         logits, labels = inputs
@@ -93,23 +95,51 @@ class ComputeMetrics(nn.Module):
         # Enable model parallelism
         shift_labels = shift_labels.to(shift_logits.device)
 
-        loss_unreduced = Fast_CrossEntropyLoss.apply(shift_logits, shift_labels)
+        # Compute standard cross-entropy loss
+        cross_entropy_loss_unreduced = Fast_CrossEntropyLoss.apply(
+            shift_logits,
+            shift_labels,
+            logit_scale=self.logit_scale
+        )
 
         valid_loss = (shift_labels >= 0)
-        loss_unreduced = loss_unreduced[valid_loss]
-        optimized_loss_unreduced = loss_unreduced
+        cross_entropy_loss_unreduced = cross_entropy_loss_unreduced[valid_loss]
 
-        # focal loss
-        if (self.focal_loss_gamma > 0):
-            p = torch.exp(-optimized_loss_unreduced)
-            optimized_loss_unreduced = (1-p)**self.focal_loss_gamma * optimized_loss_unreduced
+        # Compute loss to be optimized
+        if self.focal_loss_gamma > 0:
+            if self.use_focal_loss_star:
+                # Use Focal Loss*
+                # - See "Appendix A" in https://arxiv.org/pdf/1708.02002 for Focal Loss* details
+                # - For multinomial case the use of Beta makes no sense as invariant to translation
+                optimized_loss_unreduced = Fast_CrossEntropyLoss.apply(
+                    shift_logits,
+                    shift_labels,
+                    logit_scale=(self.logit_scale * self.focal_loss_gamma)
+                )
+                optimized_loss_unreduced = optimized_loss_unreduced[valid_loss]
+                # Adjust the loss computation by the gamma factor to match cross-entropy
+                # - See "Appendix B" in https://arxiv.org/pdf/1708.02002 for details
+                optimized_loss_unreduced = optimized_loss_unreduced / self.focal_loss_gamma
+            else:
+                # Use standard Focal Loss
+                # - See "Section 3" in https://arxiv.org/pdf/1708.02002 for Focal Loss details
+                p = torch.exp(-cross_entropy_loss_unreduced)
+                optimized_loss_unreduced = (1-p)**self.focal_loss_gamma * cross_entropy_loss_unreduced
+        else:
+            # Use standard cross-entropy loss
+            optimized_loss_unreduced = cross_entropy_loss_unreduced
+        optimized_loss = optimized_loss_unreduced.mean()
 
+        # Compute additional metrics without gradients
         with torch.no_grad():
-            accuracies = top_k_accuracy(shift_logits, shift_labels, k_list=[1, 5, 20])
             entropy = entropy_fn(shift_logits)[valid_loss]
-        loss = optimized_loss_unreduced.mean()
-        loss_unreduced = loss_unreduced.detach()
-        return loss, loss_unreduced, entropy, *accuracies
+            accuracies = top_k_accuracy(shift_logits, shift_labels, k_list=[1, 5, 20])
+
+        # Detach the original cross-entropy loss to prevent gradients from being calculated
+        cross_entropy_loss_unreduced = cross_entropy_loss_unreduced.detach()
+
+         # Return both optimized loss, and the original cross-entropy loss (for graphs / analysis)
+        return optimized_loss, cross_entropy_loss_unreduced, entropy, *accuracies
 
 
 class PipelineModel(nn.Module):
@@ -121,8 +151,12 @@ class PipelineModel(nn.Module):
         self.modules_to_not_quantize = get_keys_to_not_convert(self)
         self.loader_util = LoaderUtil(config['model'], quantization_config, self.modules_to_not_quantize)
         self.focal_loss_gamma = config.get('focal_loss_gamma', 0)
-        if self.focal_loss_gamma > 0 and is_main_process():
-            print(f'Using focal loss with gamma={self.focal_loss_gamma}')
+        self.use_focal_loss_star = config.get('use_focal_loss_star', False)
+        if is_main_process() and self.focal_loss_gamma > 0:
+            if self.use_focal_loss_star:
+                print(f'Using Focal Loss* with gamma={self.focal_loss_gamma}')
+            else:
+                print(f'Using Focal Loss with gamma={self.focal_loss_gamma}')
 
         for name, p in self.named_parameters():
             p.original_name = name

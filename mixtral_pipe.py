@@ -204,5 +204,15 @@ class MixtralForCausalLMPipe(PipelineModel, transformers.MixtralForCausalLM):
             result.append(LayerSpec(MixtralDecoderLayerPipe, self.loader_util, block, self.num_experts_to_offload))
         result.append(LayerSpec(MixtralRMSNormPipe, self.loader_util, self.model.norm, _estimated_size=0))
         result.append(LayerSpec(LmHeadPipe, self.loader_util, self.lm_head, _estimated_size=0))
-        result.append(LayerSpec(MixtralComputeMetrics, self.load_balancing_loss_coef, self.num_experts, self.num_experts_per_tok, focal_loss_gamma=self.focal_loss_gamma, _estimated_size=0))
+        result.append(
+            LayerSpec(
+                MixtralComputeMetrics,
+                self.load_balancing_loss_coef,
+                self.num_experts,
+                self.num_experts_per_tok,
+                focal_loss_gamma=self.focal_loss_gamma,
+                use_focal_loss_star=self.use_focal_loss_star,
+                _estimated_size=0
+            )
+        )
         return result
