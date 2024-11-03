@@ -66,20 +66,19 @@ def get_most_recent_run_dir(output_dir):
 
 
 def write_metrics(tb_writer, prefix, metrics, step):
-    rv = None
-
-    tb_writer.add_scalar(f'{prefix}/optimized_loss', metrics[0].mean().item(), step)
+    optimized_loss = metrics[0].mean().item()
+    tb_writer.add_scalar(f'{prefix}/optimized_loss', optimized_loss, step)
 
     if len(metrics) >= 2:
         losses = metrics[1].view(-1)
-        rv = losses.mean().item()
+        loss = losses.mean().item()
         sorted_losses, sorted_losses_idx = torch.sort(losses)
         quantiles = torch.tensor([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.96, 0.97, 0.98, 0.99, 0.999], dtype=torch.float32).to(losses.device)
         quantiles_idx = [int(len(losses)*quantile) for quantile in quantiles]
         loss_quantiles = [sorted_losses[i] for i in quantiles_idx]
         for quantile, value in zip(quantiles, loss_quantiles):
             tb_writer.add_scalar(f'{prefix}/loss_quantile_{quantile:.3f}', value, step)
-        tb_writer.add_scalar(f'{prefix}/loss', rv, step)
+        tb_writer.add_scalar(f'{prefix}/loss', loss, step)
         tb_writer.add_histogram(f'{prefix}/log_loss_hist', torch.log(1e-8 + losses), step)
 
     if len(metrics) >= 3:
@@ -103,7 +102,7 @@ def write_metrics(tb_writer, prefix, metrics, step):
     if len(metrics) >= 8:
         tb_writer.add_scalar(f'{prefix}/alternate_load_balancing_loss', metrics[7].mean().item(), step)
 
-    return rv
+    return optimized_loss
 
 def evaluate_single(model_engine, name, eval_dataloader, tb_writer, step, eval_gradient_accumulation_steps):
     orig_micro_batches = model_engine.micro_batches
