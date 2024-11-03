@@ -41,12 +41,14 @@ def set_data(module, data):
         module.weight.data = data
 
 
-def entropy_fn(logits):
+def entropy_fn(logits, logit_scale=0):
     result = []
     # There is a very wide range of chuck sizes that cause no increase in memory reported by
     # nvidia-smi (Torch re-using blocks of memory?). If you try to compute it as one tensor,
     # memory usage is huge. Chuck size of 128 seems good enough for now.
     for logits_chuck in torch.split(logits, 128):
+        if logit_scale != 0:
+            logits_chunk = logit_scale * logits_chunk
         result.append(torch.distributions.Categorical(logits=logits_chuck).entropy())
     return torch.cat(result).float()
 
@@ -132,7 +134,7 @@ class ComputeMetrics(nn.Module):
 
         # Compute additional metrics without gradients
         with torch.no_grad():
-            entropy = entropy_fn(shift_logits)[valid_loss]
+            entropy = entropy_fn(shift_logits, self.logit_scale)[valid_loss]
             accuracies = top_k_accuracy(shift_logits, shift_labels, k_list=[1, 5, 20])
 
         # Detach the original cross-entropy loss to prevent gradients from being calculated
