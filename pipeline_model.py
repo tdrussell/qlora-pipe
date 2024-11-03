@@ -99,7 +99,7 @@ class ComputeMetrics(nn.Module):
         cross_entropy_loss_unreduced = Fast_CrossEntropyLoss.apply(
             shift_logits,
             shift_labels,
-            logit_scale=self.logit_scale
+            self.logit_scale
         )
 
         valid_loss = (shift_labels >= 0)
@@ -114,7 +114,7 @@ class ComputeMetrics(nn.Module):
                 optimized_loss_unreduced = Fast_CrossEntropyLoss.apply(
                     shift_logits,
                     shift_labels,
-                    logit_scale=(self.logit_scale * self.focal_loss_gamma)
+                    self.logit_scale * self.focal_loss_gamma
                 )
                 optimized_loss_unreduced = optimized_loss_unreduced[valid_loss]
                 # Adjust the loss computation by the gamma factor to match cross-entropy
