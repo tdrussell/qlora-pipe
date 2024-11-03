@@ -230,7 +230,7 @@ MAX_FUSED_SIZE = 65536 # 2**16
 
 class Fast_CrossEntropyLoss(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, logits, labels, logit_scale = 0):
+    def forward(ctx, logits, labels, logit_scale = 1.0):
         n_rows, vocab_size = logits.shape
 
         div, mod = divmod(vocab_size, MAX_FUSED_SIZE)
@@ -249,7 +249,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
                 labels,
                 VOCAB_SIZE = vocab_size,
                 BLOCK_SIZE = BLOCK_SIZE,
-                DO_LOGIT_SCALING = (logit_scale != 0),
+                DO_LOGIT_SCALING = (logit_scale != 1.0),
                 LOGIT_SCALE = logit_scale,
                 num_warps  = num_warps,
             )
@@ -265,7 +265,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
                 VOCAB_SIZE = vocab_size,
                 N_CHUNKS   = n_chunks,
                 BLOCK_SIZE = MAX_FUSED_SIZE,
-                DO_LOGIT_SCALING = (logit_scale != 0),
+                DO_LOGIT_SCALING = (logit_scale != 1.0),
                 LOGIT_SCALE = logit_scale,
                 num_warps  = 32,
             )
@@ -297,7 +297,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
             labels,
             VOCAB_SIZE = vocab_size,
             BLOCK_SIZE = BLOCK_SIZE,
-            DO_LOGIT_SCALING = (ctx.logit_scale != 0),
+            DO_LOGIT_SCALING = (ctx.logit_scale != 1.0),
             LOGIT_SCALE = ctx.logit_scale,
             num_warps  = 8,
         )
@@ -306,7 +306,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
 pass
 
 
-def fast_cross_entropy_loss(logits, labels, logit_scale=0):
+def fast_cross_entropy_loss(logits, labels, logit_scale=1.0):
     """
     Arguments:
         logits: (batch, seq_len, vocab_size)
