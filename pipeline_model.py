@@ -78,11 +78,25 @@ class LayerSpec(ds_pipe_module.LayerSpec):
 
 
 class ComputeMetrics(nn.Module):
-    def __init__(self, logit_scale=1.0, focal_loss_gamma=0, use_focal_loss_star=False):
+    def __init__(
+            self,
+            logit_scale=1.0,
+            loss_function='cross_entropy_loss',
+            use_gradient_ascent=False,
+            focal_loss_gamma=0
+        ):
         super().__init__()
         self.logit_scale = logit_scale
+        self.loss_function = loss_function.lower()
+        self.use_gradient_ascent = use_gradient_ascent
         self.focal_loss_gamma = focal_loss_gamma
-        self.use_focal_loss_star = use_focal_loss_star
+
+        if self.logit_scale <= 0:
+            raise ValueError("logit_scale must be greater than 0")
+        if self.loss_function == 'cross_entropy_loss' and self.focal_loss_gamma != 0:
+            raise ValueError("focal_loss_gamma can't be used with 'cross_entropy_loss' function")
+        elif self.loss_function != 'cross_entropy_loss' and self.focal_loss_gamma <= 0:
+            raise ValueError("focal_loss_gamma must be greater than 0 for the specified loss function")
 
     def forward(self, inputs):
         logits, labels = inputs
@@ -95,41 +109,48 @@ class ComputeMetrics(nn.Module):
         shift_labels = shift_labels.view(-1)
         # Enable model parallelism
         shift_labels = shift_labels.to(shift_logits.device)
+        valid_loss = (shift_labels >= 0)
 
-        # Compute standard cross-entropy loss
+        if self.logit_scale <= 0: raise ValueError("logit_scale must be greater than 0")
         cross_entropy_loss_unreduced = Fast_CrossEntropyLoss.apply(
             shift_logits,
             shift_labels,
             self.logit_scale
         )
-
-        valid_loss = (shift_labels >= 0)
         cross_entropy_loss_unreduced = cross_entropy_loss_unreduced[valid_loss]
 
-        # Compute loss to be optimized
-        if self.focal_loss_gamma > 0:
-            if self.use_focal_loss_star:
-                # Use Focal Loss*
-                # - See "Appendix A" in https://arxiv.org/pdf/1708.02002 for Focal Loss* details
-                # - For multinomial case the use of Beta makes no sense as invariant to translation
-                optimized_loss_unreduced = Fast_CrossEntropyLoss.apply(
-                    shift_logits,
-                    shift_labels,
-                    self.logit_scale * self.focal_loss_gamma
-                )
-                optimized_loss_unreduced = optimized_loss_unreduced[valid_loss]
-                # Adjust the loss computation by the gamma factor to match cross-entropy
-                # - See "Appendix B" in https://arxiv.org/pdf/1708.02002 for details
-                optimized_loss_unreduced = optimized_loss_unreduced / self.focal_loss_gamma
-            else:
-                # Use standard Focal Loss
-                # - See "Section 3" in https://arxiv.org/pdf/1708.02002 for Focal Loss details
-                p = torch.exp(-cross_entropy_loss_unreduced)
-                optimized_loss_unreduced = (1-p)**self.focal_loss_gamma * cross_entropy_loss_unreduced
-        else:
-            # Use standard cross-entropy loss
+        if self.loss_function == 'cross_entropy_loss':
             optimized_loss_unreduced = cross_entropy_loss_unreduced
+        elif self.loss_function == 'focal_loss':
+            # See https://arxiv.org/abs/1708.02002 (Section 3)
+            p = torch.exp(-cross_entropy_loss_unreduced)
+            optimized_loss_unreduced = (1-p)**self.focal_loss_gamma * cross_entropy_loss_unreduced
+        elif self.loss_function == 'inverse_focal_loss':
+            # See "Rethinking Calibration of Deep Neural Networks: Do Not Be Afraid of Overconfidence" (Section 5.2)
+            # NOTE: They use (1+p)^gamma in the paper, but p^gamma more useful for use with gradient ascent
+            p = torch.exp(-cross_entropy_loss_unreduced)
+            optimized_loss_unreduced = p**self.focal_loss_gamma * cross_entropy_loss_unreduced
+        elif self.loss_function == 'polynomial_cross_entropy_loss':
+            # See "Gradient as a Foundation for Building a Loss Function" (Section III.B)
+            # NOTE: This is a generalisation of their "Quadratic Cross-Entropy (QCE)" loss to arbitrary powers
+            optimized_loss_unreduced = torch.abs(cross_entropy_loss_unreduced**self.focal_loss_gamma) / self.focal_loss_gamma
+        elif self.loss_function == 'focal_loss_star':
+            # See https://arxiv.org/abs/1708.02002 (Appendix A/B)
+            # NOTE: The use of Beta makes no sense for the multinomial case as it's invariant to translation
+            optimized_loss_unreduced = Fast_CrossEntropyLoss.apply(
+                shift_logits,
+                shift_labels,
+                self.logit_scale * self.focal_loss_gamma
+            )
+            optimized_loss_unreduced = optimized_loss_unreduced[valid_loss]
+            optimized_loss_unreduced = optimized_loss_unreduced / self.focal_loss_gamma
+        else:
+            raise NotImplementedError(self.loss_function)
+
+        # Reduce optimized loss, and optionally negate to use gradient ascent
         optimized_loss = optimized_loss_unreduced.mean()
+        if self.use_gradient_ascent:
+            optimized_loss = -optimized_loss
 
         # Compute additional metrics without gradients
         with torch.no_grad():
@@ -151,13 +172,14 @@ class PipelineModel(nn.Module):
         self.train_config = config
         self.modules_to_not_quantize = get_keys_to_not_convert(self)
         self.loader_util = LoaderUtil(config['model'], quantization_config, self.modules_to_not_quantize)
+        self.loss_function = config.get('loss_function', 'cross_entropy_loss').lower()
+        self.use_gradient_ascent = config.get('use_gradient_ascent', False)
         self.focal_loss_gamma = config.get('focal_loss_gamma', 0)
-        self.use_focal_loss_star = config.get('use_focal_loss_star', False)
-        if is_main_process() and self.focal_loss_gamma > 0:
-            if self.use_focal_loss_star:
-                print(f'Using Focal Loss* with gamma={self.focal_loss_gamma}')
-            else:
-                print(f'Using Focal Loss with gamma={self.focal_loss_gamma}')
+        if is_main_process():
+            loss_parameters = 'ascent' if self.use_gradient_ascent else 'descent'
+            if self.focal_loss_gamma > 0:
+                loss_parameters += f' with gamma={self.focal_loss_gamma}'
+            print(f'Optimizing using {self.loss_function} via gradient {loss_parameters}')
 
         for name, p in self.named_parameters():
             p.original_name = name

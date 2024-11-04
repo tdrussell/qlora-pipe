@@ -224,8 +224,9 @@ class LlamaForCausalLMPipe(PipelineModel, transformers.LlamaForCausalLM):
         result.append(
             LayerSpec(
                 ComputeMetrics,
-                focal_loss_gamma=self.focal_loss_gamma,
-                use_focal_loss_star=self.use_focal_loss_star
+                loss_function=self.loss_function,
+                use_gradient_ascent=self.use_gradient_ascent,
+                focal_loss_gamma=self.focal_loss_gamma
             )
         )
         return result
@@ -269,8 +270,9 @@ class Qwen2ForCausalLMPipe(PipelineModel, transformers.Qwen2ForCausalLM):
         result.append(
             LayerSpec(
                 ComputeMetrics,
-                focal_loss_gamma=self.focal_loss_gamma,
-                use_focal_loss_star=self.use_focal_loss_star
+                loss_function=self.loss_function,
+                use_gradient_ascent=self.use_gradient_ascent,
+                focal_loss_gamma=self.focal_loss_gamma
             )
         )
         return result
@@ -319,8 +321,9 @@ class CohereForCausalLMPipe(PipelineModel, transformers.CohereForCausalLM):
             LayerSpec(
                 ComputeMetrics,
                 logit_scale=self.logit_scale,
+                loss_function=self.loss_function,
+                use_gradient_ascent=self.use_gradient_ascent,
                 focal_loss_gamma=self.focal_loss_gamma,
-                use_focal_loss_star=self.use_focal_loss_star,
                 _estimated_size=embedding_relative_size
             )
         )
@@ -365,8 +368,9 @@ class Phi3ForCausalLMPipe(PipelineModel, transformers.Phi3ForCausalLM):
         result.append(
             LayerSpec(
                 ComputeMetrics,
-                focal_loss_gamma=self.focal_loss_gamma,
-                use_focal_loss_star=self.use_focal_loss_star
+                loss_function=self.loss_function,
+                use_gradient_ascent=self.use_gradient_ascent,
+                focal_loss_gamma=self.focal_loss_gamma
             )
         )
         return result
@@ -416,8 +420,9 @@ class Gemma2ForCausalLMPipe(PipelineModel, transformers.Gemma2ForCausalLM):
         result.append(
             LayerSpec(
                 ComputeMetrics,
+                loss_function=self.loss_function,
+                use_gradient_ascent=self.use_gradient_ascent,
                 focal_loss_gamma=self.focal_loss_gamma,
-                use_focal_loss_star=self.use_focal_loss_star,
                 _estimated_size=embedding_relative_size
             )
         )
@@ -462,8 +467,9 @@ class MistralForCausalLMPipe(PipelineModel, transformers.MistralForCausalLM):
         result.append(
             LayerSpec(
                 ComputeMetrics,
-                focal_loss_gamma=self.focal_loss_gamma,
-                use_focal_loss_star=self.use_focal_loss_star
+                loss_function=self.loss_function,
+                use_gradient_ascent=self.use_gradient_ascent,
+                focal_loss_gamma=self.focal_loss_gamma
             )
         )
         return result

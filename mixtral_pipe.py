@@ -210,8 +210,9 @@ class MixtralForCausalLMPipe(PipelineModel, transformers.MixtralForCausalLM):
                 load_balancing_loss_coef=self.load_balancing_loss_coef,
                 num_experts=self.num_experts,
                 num_experts_per_tok=self.num_experts_per_tok,
+                loss_function=self.loss_function,
+                use_gradient_ascent=self.use_gradient_ascent,
                 focal_loss_gamma=self.focal_loss_gamma,
-                use_focal_loss_star=self.use_focal_loss_star,
                 _estimated_size=0
             )
         )
