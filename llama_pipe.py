@@ -225,7 +225,6 @@ class LlamaForCausalLMPipe(PipelineModel, transformers.LlamaForCausalLM):
             LayerSpec(
                 ComputeMetrics,
                 loss_function=self.loss_function,
-                use_gradient_ascent=self.use_gradient_ascent,
                 focal_loss_gamma=self.focal_loss_gamma
             )
         )
@@ -271,7 +270,6 @@ class Qwen2ForCausalLMPipe(PipelineModel, transformers.Qwen2ForCausalLM):
             LayerSpec(
                 ComputeMetrics,
                 loss_function=self.loss_function,
-                use_gradient_ascent=self.use_gradient_ascent,
                 focal_loss_gamma=self.focal_loss_gamma
             )
         )
@@ -322,7 +320,6 @@ class CohereForCausalLMPipe(PipelineModel, transformers.CohereForCausalLM):
                 ComputeMetrics,
                 logit_scale=self.logit_scale,
                 loss_function=self.loss_function,
-                use_gradient_ascent=self.use_gradient_ascent,
                 focal_loss_gamma=self.focal_loss_gamma,
                 _estimated_size=embedding_relative_size
             )
@@ -369,7 +366,6 @@ class Phi3ForCausalLMPipe(PipelineModel, transformers.Phi3ForCausalLM):
             LayerSpec(
                 ComputeMetrics,
                 loss_function=self.loss_function,
-                use_gradient_ascent=self.use_gradient_ascent,
                 focal_loss_gamma=self.focal_loss_gamma
             )
         )
@@ -421,7 +417,6 @@ class Gemma2ForCausalLMPipe(PipelineModel, transformers.Gemma2ForCausalLM):
             LayerSpec(
                 ComputeMetrics,
                 loss_function=self.loss_function,
-                use_gradient_ascent=self.use_gradient_ascent,
                 focal_loss_gamma=self.focal_loss_gamma,
                 _estimated_size=embedding_relative_size
             )
@@ -468,7 +463,6 @@ class MistralForCausalLMPipe(PipelineModel, transformers.MistralForCausalLM):
             LayerSpec(
                 ComputeMetrics,
                 loss_function=self.loss_function,
-                use_gradient_ascent=self.use_gradient_ascent,
                 focal_loss_gamma=self.focal_loss_gamma
             )
         )

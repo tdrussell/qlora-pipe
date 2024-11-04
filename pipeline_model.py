@@ -82,13 +82,11 @@ class ComputeMetrics(nn.Module):
             self,
             logit_scale=1.0,
             loss_function='cross_entropy_loss',
-            use_gradient_ascent=False,
             focal_loss_gamma=0
         ):
         super().__init__()
         self.logit_scale = logit_scale
         self.loss_function = loss_function.lower()
-        self.use_gradient_ascent = use_gradient_ascent
         self.focal_loss_gamma = focal_loss_gamma
 
         if self.logit_scale <= 0:
@@ -124,15 +122,6 @@ class ComputeMetrics(nn.Module):
             # See https://arxiv.org/abs/1708.02002 (Section 3)
             p = torch.exp(-cross_entropy_loss_unreduced)
             loss_unreduced = (1-p)**self.focal_loss_gamma * cross_entropy_loss_unreduced
-        elif self.loss_function == 'inverse_focal_loss':
-            # See "Rethinking Calibration of Deep Neural Networks: Do Not Be Afraid of Overconfidence" (Section 5.2)
-            # NOTE: They use (1+p)^gamma in the paper, but p^gamma more useful for use with gradient ascent
-            p = torch.exp(-cross_entropy_loss_unreduced)
-            loss_unreduced = p**self.focal_loss_gamma * cross_entropy_loss_unreduced
-        elif self.loss_function == 'polynomial_cross_entropy_loss':
-            # See "Gradient as a Foundation for Building a Loss Function" (Section III.B)
-            # NOTE: This is a generalisation of their "Quadratic Cross-Entropy (QCE)" loss to arbitrary powers
-            loss_unreduced = torch.abs(cross_entropy_loss_unreduced**self.focal_loss_gamma) / self.focal_loss_gamma
         elif self.loss_function == 'focal_loss_star':
             # See https://arxiv.org/abs/1708.02002 (Appendix A/B)
             # NOTE: The use of Beta makes no sense for the multinomial case as it's invariant to translation
@@ -145,24 +134,13 @@ class ComputeMetrics(nn.Module):
             loss_unreduced = loss_unreduced / self.focal_loss_gamma
         else:
             raise NotImplementedError(self.loss_function)
-
-        # Optionally negate to perform gradient ascent
-        if self.use_gradient_ascent:
-            loss_unreduced = -loss_unreduced
         
-         # Reduce to get the actual loss that is to be optimized
-        loss = loss_unreduced.mean()
-
-        # Detach the unreduced losses to prevent gradients from being calculated
-        loss_unreduced = loss_unreduced.detach()
-        
-        # Compute additional metrics without gradients
         with torch.no_grad():
             entropy = entropy_fn(shift_logits, self.logit_scale)[valid_loss]
             negative_log_likelihood = cross_entropy_loss_unreduced.mean()
             accuracies = top_k_accuracy(shift_logits, shift_labels, k_list=[1, 5, 20])
-
-         # Return loss to be optimized, and the the unreduced losses (for graphs / analysis)
+        loss = loss_unreduced.mean()
+        loss_unreduced = loss_unreduced.detach()
         return loss, loss_unreduced, entropy, negative_log_likelihood, *accuracies
 
 
@@ -175,13 +153,9 @@ class PipelineModel(nn.Module):
         self.modules_to_not_quantize = get_keys_to_not_convert(self)
         self.loader_util = LoaderUtil(config['model'], quantization_config, self.modules_to_not_quantize)
         self.loss_function = config.get('loss_function', 'cross_entropy_loss').lower()
-        self.use_gradient_ascent = config.get('use_gradient_ascent', False)
         self.focal_loss_gamma = config.get('focal_loss_gamma', 0)
-        if is_main_process():
-            loss_parameters = 'ascent' if self.use_gradient_ascent else 'descent'
-            if self.focal_loss_gamma > 0:
-                loss_parameters += f' with gamma={self.focal_loss_gamma}'
-            print(f'Optimizing using {self.loss_function} via gradient {loss_parameters}')
+        if self.focal_loss_gamma > 0 and is_main_process():
+            print(f'Optimizing using \'{self.loss_function}\' with gamma={self.focal_loss_gamma}')
 
         for name, p in self.named_parameters():
             p.original_name = name

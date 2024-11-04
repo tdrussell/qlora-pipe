@@ -77,12 +77,7 @@ def write_metrics(tb_writer, prefix, metrics, step):
         loss_quantiles = [sorted_losses[i] for i in quantiles_idx]
         for quantile, value in zip(quantiles, loss_quantiles):
             tb_writer.add_scalar(f'{prefix}/loss_quantile_{quantile:.3f}', value, step)
-        min_loss = losses.min()
-        if min_loss <= 0:
-            adjusted_losses = torch.clamp(losses - min_loss, min=0)
-        else:
-            adjusted_losses = losses
-        tb_writer.add_histogram(f'{prefix}/log_loss_hist', torch.log(1e-8 + adjusted_losses), step)
+        tb_writer.add_histogram(f'{prefix}/log_loss_hist', torch.log(1e-8 + losses), step)
 
     if len(metrics) > 2:
         entropy = metrics[2].view(-1)
@@ -450,25 +445,6 @@ if __name__ == '__main__':
                 weight_decay=optim_config.get('weight_decay', 0.01),
                 kahan_sum=optim_config.get('kahan_sum', True),
                 eps=optim_config.get('eps', 1e-6)
-            )
-        elif optim_type == 'sgdw':
-            import optimi
-            return optimi.SGD(
-                model_parameters,
-                lr=lr,
-                momentum=optim_config.get('momentum', 0.0),
-                weight_decay=optim_config.get('weight_decay', 0.0),
-                decouple_wd=optim_config.get('decouple_wd', True)
-            )
-        elif optim_type == 'sgdw_kahan':
-            import optimi
-            return optimi.SGD(
-                model_parameters,
-                lr=lr,
-                momentum=optim_config.get('momentum', 0.0),
-                weight_decay=optim_config.get('weight_decay', 0.0),
-                decouple_wd=optim_config.get('decouple_wd', True),
-                kahan_sum=optim_config.get('kahan_sum', True)
             )
         else:
             raise NotImplementedError(optim_type)
