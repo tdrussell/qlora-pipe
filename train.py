@@ -443,6 +443,25 @@ if __name__ == '__main__':
                 kahan_sum=optim_config.get('kahan_sum', True),
                 eps=optim_config.get('eps', 1e-6)
             )
+        elif optim_type == 'sgdw':
+            import optimi
+            return optimi.SGD(
+                model_parameters,
+                lr=lr,
+                momentum=optim_config.get('momentum', 0.0),
+                weight_decay=optim_config.get('weight_decay', 0.0),
+                decouple_wd=optim_config.get('decouple_wd', True)
+            )
+        elif optim_type == 'sgdw_kahan':
+            import optimi
+            return optimi.SGD(
+                model_parameters,
+                lr=lr,
+                momentum=optim_config.get('momentum', 0.0),
+                weight_decay=optim_config.get('weight_decay', 0.0),
+                decouple_wd=optim_config.get('decouple_wd', True),
+                kahan_sum=optim_config.get('kahan_sum', True)
+            )
         else:
             raise NotImplementedError(optim_type)
 
