@@ -66,22 +66,20 @@ def get_most_recent_run_dir(output_dir):
 
 
 def write_metrics(tb_writer, prefix, metrics, step):
-    optimized_loss = metrics[0].mean().item()
-    tb_writer.add_scalar(f'{prefix}/optimized_loss', optimized_loss, step)
+    loss = metrics[0].mean().item()
+    tb_writer.add_scalar(f'{prefix}/loss', loss, step)
 
-    if len(metrics) >= 2:
+    if len(metrics) > 1:
         losses = metrics[1].view(-1)
-        loss = losses.mean().item()
         sorted_losses, sorted_losses_idx = torch.sort(losses)
         quantiles = torch.tensor([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.96, 0.97, 0.98, 0.99, 0.999], dtype=torch.float32).to(losses.device)
         quantiles_idx = [int(len(losses)*quantile) for quantile in quantiles]
         loss_quantiles = [sorted_losses[i] for i in quantiles_idx]
         for quantile, value in zip(quantiles, loss_quantiles):
             tb_writer.add_scalar(f'{prefix}/loss_quantile_{quantile:.3f}', value, step)
-        tb_writer.add_scalar(f'{prefix}/loss', loss, step)
         tb_writer.add_histogram(f'{prefix}/log_loss_hist', torch.log(1e-8 + losses), step)
 
-    if len(metrics) >= 3:
+    if len(metrics) > 2:
         entropy = metrics[2].view(-1)
         assert entropy.size() == losses.size()
         tb_writer.add_scalar(f'{prefix}/entropy', entropy.mean().item(), step)
@@ -92,17 +90,22 @@ def write_metrics(tb_writer, prefix, metrics, step):
         for quantile, value in zip(quantiles, entropy_quantiles):
             tb_writer.add_scalar(f'{prefix}/entropy_quantile_{quantile:.3f}', value, step)
 
-    if len(metrics) >= 4:
-        tb_writer.add_scalar(f'{prefix}/top1_accuracy', metrics[3].mean().item(), step)
-        tb_writer.add_scalar(f'{prefix}/top5_accuracy', metrics[4].mean().item(), step)
-        tb_writer.add_scalar(f'{prefix}/top20_accuracy', metrics[5].mean().item(), step)
+    if len(metrics) > 3:
+        negative_log_likelihood = metrics[3].mean().item()
+        tb_writer.add_scalar(f'{prefix}/negative_log_likelihood', negative_log_likelihood, step)
 
-    if len(metrics) >= 7:
-        tb_writer.add_scalar(f'{prefix}/load_balancing_loss', metrics[6].mean().item(), step)
-    if len(metrics) >= 8:
-        tb_writer.add_scalar(f'{prefix}/alternate_load_balancing_loss', metrics[7].mean().item(), step)
+    if len(metrics) > 4:
+        tb_writer.add_scalar(f'{prefix}/top1_accuracy', metrics[4].mean().item(), step)
+        tb_writer.add_scalar(f'{prefix}/top5_accuracy', metrics[5].mean().item(), step)
+        tb_writer.add_scalar(f'{prefix}/top20_accuracy', metrics[6].mean().item(), step)
 
-    return optimized_loss
+    if len(metrics) > 7:
+        tb_writer.add_scalar(f'{prefix}/load_balancing_loss', metrics[7].mean().item(), step)
+
+    if len(metrics) > 8:
+        tb_writer.add_scalar(f'{prefix}/alternate_load_balancing_loss', metrics[8].mean().item(), step)
+
+    return loss
 
 def evaluate_single(model_engine, name, eval_dataloader, tb_writer, step, eval_gradient_accumulation_steps):
     orig_micro_batches = model_engine.micro_batches
