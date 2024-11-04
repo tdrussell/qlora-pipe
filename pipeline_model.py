@@ -111,7 +111,6 @@ class ComputeMetrics(nn.Module):
         shift_labels = shift_labels.to(shift_logits.device)
         valid_loss = (shift_labels >= 0)
 
-        if self.logit_scale <= 0: raise ValueError("logit_scale must be greater than 0")
         cross_entropy_loss_unreduced = Fast_CrossEntropyLoss.apply(
             shift_logits,
             shift_labels,
