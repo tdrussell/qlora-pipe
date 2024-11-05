@@ -77,7 +77,8 @@ def write_metrics(tb_writer, prefix, metrics, step):
         loss_quantiles = [sorted_losses[i] for i in quantiles_idx]
         for quantile, value in zip(quantiles, loss_quantiles):
             tb_writer.add_scalar(f'{prefix}/loss_quantile_{quantile:.3f}', value, step)
-        tb_writer.add_histogram(f'{prefix}/log_loss_hist', torch.log(1e-8 + losses), step)
+        positive_losses = (losses > 0)
+        tb_writer.add_histogram(f'{prefix}/log_loss_hist',  torch.log(losses[positive_losses]), step)
 
     if len(metrics) > 2:
         entropy = metrics[2].view(-1)
