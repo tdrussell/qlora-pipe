@@ -93,6 +93,10 @@ def write_metrics(tb_writer, prefix, metrics, step):
     if len(metrics) > 3:
         negative_log_likelihood = metrics[3].mean().item()
         tb_writer.add_scalar(f'{prefix}/negative_log_likelihood', negative_log_likelihood, step)
+        likelihood = torch.exp(-negative_log_likelihood).item()
+        tb_writer.add_scalar(f'{prefix}/likelihood', likelihood, step)
+        perplexity = torch.exp(negative_log_likelihood).item()
+        tb_writer.add_scalar(f'{prefix}/perplexity', perplexity, step)
 
     if len(metrics) > 4:
         tb_writer.add_scalar(f'{prefix}/top1_accuracy', metrics[4].mean().item(), step)
