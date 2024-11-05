@@ -81,19 +81,19 @@ class ComputeMetrics(nn.Module):
     def __init__(
             self,
             logit_scale=1.0,
-            loss_function='cross_entropy_loss',
+            loss_type='cross_entropy_loss',
             focal_loss_gamma=0
         ):
         super().__init__()
         self.logit_scale = logit_scale
-        self.loss_function = loss_function.lower()
+        self.loss_type = loss_type.lower()
         self.focal_loss_gamma = focal_loss_gamma
 
         if self.logit_scale <= 0:
             raise ValueError("logit_scale must be greater than 0")
-        if self.loss_function == 'cross_entropy_loss' and self.focal_loss_gamma != 0:
+        if self.loss_type == 'cross_entropy_loss' and self.focal_loss_gamma != 0:
             raise ValueError("focal_loss_gamma can't be used with 'cross_entropy_loss' function")
-        elif self.loss_function != 'cross_entropy_loss' and self.focal_loss_gamma <= 0:
+        elif self.loss_type != 'cross_entropy_loss' and self.focal_loss_gamma <= 0:
             raise ValueError("focal_loss_gamma must be greater than 0 for the specified loss function")
 
     def forward(self, inputs):
@@ -116,13 +116,13 @@ class ComputeMetrics(nn.Module):
         )
         cross_entropy_loss_unreduced = cross_entropy_loss_unreduced[valid_loss]
 
-        if self.loss_function == 'cross_entropy_loss':
+        if self.loss_type == 'cross_entropy_loss':
             loss_unreduced = cross_entropy_loss_unreduced
-        elif self.loss_function == 'focal_loss':
+        elif self.loss_type == 'focal_loss':
             # See https://arxiv.org/abs/1708.02002 (Section 3)
             p = torch.exp(-cross_entropy_loss_unreduced)
             loss_unreduced = (1-p)**self.focal_loss_gamma * cross_entropy_loss_unreduced
-        elif self.loss_function == 'focal_loss_star':
+        elif self.loss_type == 'focal_loss_star':
             # See https://arxiv.org/abs/1708.02002 (Appendix A/B)
             # NOTE: The use of Beta makes no sense for the multinomial case as it's invariant to translation
             loss_unreduced = Fast_CrossEntropyLoss.apply(
@@ -133,7 +133,7 @@ class ComputeMetrics(nn.Module):
             loss_unreduced = loss_unreduced[valid_loss]
             loss_unreduced = loss_unreduced / self.focal_loss_gamma
         else:
-            raise NotImplementedError(self.loss_function)
+            raise NotImplementedError(self.loss_type)
         
         with torch.no_grad():
             entropy = entropy_fn(shift_logits, self.logit_scale)[valid_loss]
@@ -152,10 +152,10 @@ class PipelineModel(nn.Module):
         self.train_config = config
         self.modules_to_not_quantize = get_keys_to_not_convert(self)
         self.loader_util = LoaderUtil(config['model'], quantization_config, self.modules_to_not_quantize)
-        self.loss_function = config.get('loss_function', 'cross_entropy_loss').lower()
+        self.loss_type = config.get('loss_type', 'cross_entropy_loss').lower()
         self.focal_loss_gamma = config.get('focal_loss_gamma', 0)
         if self.focal_loss_gamma > 0 and is_main_process():
-            print(f'Optimizing using \'{self.loss_function}\' with gamma={self.focal_loss_gamma}')
+            print(f'Optimizing using \'{self.loss_type}\' with gamma={self.focal_loss_gamma}')
 
         for name, p in self.named_parameters():
             p.original_name = name

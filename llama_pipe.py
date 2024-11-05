@@ -224,7 +224,7 @@ class LlamaForCausalLMPipe(PipelineModel, transformers.LlamaForCausalLM):
         result.append(
             LayerSpec(
                 ComputeMetrics,
-                loss_function=self.loss_function,
+                loss_type=self.loss_type,
                 focal_loss_gamma=self.focal_loss_gamma
             )
         )
@@ -269,7 +269,7 @@ class Qwen2ForCausalLMPipe(PipelineModel, transformers.Qwen2ForCausalLM):
         result.append(
             LayerSpec(
                 ComputeMetrics,
-                loss_function=self.loss_function,
+                loss_type=self.loss_type,
                 focal_loss_gamma=self.focal_loss_gamma
             )
         )
@@ -319,7 +319,7 @@ class CohereForCausalLMPipe(PipelineModel, transformers.CohereForCausalLM):
             LayerSpec(
                 ComputeMetrics,
                 logit_scale=self.logit_scale,
-                loss_function=self.loss_function,
+                loss_type=self.loss_type,
                 focal_loss_gamma=self.focal_loss_gamma,
                 _estimated_size=embedding_relative_size
             )
@@ -365,7 +365,7 @@ class Phi3ForCausalLMPipe(PipelineModel, transformers.Phi3ForCausalLM):
         result.append(
             LayerSpec(
                 ComputeMetrics,
-                loss_function=self.loss_function,
+                loss_type=self.loss_type,
                 focal_loss_gamma=self.focal_loss_gamma
             )
         )
@@ -416,7 +416,7 @@ class Gemma2ForCausalLMPipe(PipelineModel, transformers.Gemma2ForCausalLM):
         result.append(
             LayerSpec(
                 ComputeMetrics,
-                loss_function=self.loss_function,
+                loss_type=self.loss_type,
                 focal_loss_gamma=self.focal_loss_gamma,
                 _estimated_size=embedding_relative_size
             )
@@ -462,7 +462,7 @@ class MistralForCausalLMPipe(PipelineModel, transformers.MistralForCausalLM):
         result.append(
             LayerSpec(
                 ComputeMetrics,
-                loss_function=self.loss_function,
+                loss_type=self.loss_type,
                 focal_loss_gamma=self.focal_loss_gamma
             )
         )
