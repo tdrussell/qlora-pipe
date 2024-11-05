@@ -77,8 +77,9 @@ for shard in (pbar := tqdm(shards)):
             lora_A, lora_B = find_lora_weights(key)
             if lora_A is not None:
                 pbar.set_description(f'found lora weights for {key}: {lora_A.size()}, {lora_B.size()}')
-                delta = (lora_B @ lora_A) * scale
-                delta = delta.to(tensor.dtype)
-                tensor += delta
+                old_type = tensor.dtype
+                tensor = tensor.to(torch.float32)
+                tensor += scale * lora_B.to(torch.float32) @ lora_A.to(torch.float32)
+                tensor = tensor.to(old_type)
             tensors[key] = tensor
         safetensors.torch.save_file(tensors, output_path / shard.name, metadata=metadata)
