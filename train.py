@@ -92,8 +92,8 @@ def write_metrics(tb_writer, prefix, metrics, step):
             tb_writer.add_scalar(f'{prefix}/entropy_quantile_{quantile:.3f}', value, step)
 
     if len(metrics) > 3:
-        negative_log_likelihood = metrics[3].mean().item()
-        tb_writer.add_scalar(f'{prefix}/negative_log_likelihood', negative_log_likelihood, step)
+        negative_log_likelihood = metrics[3].mean()
+        tb_writer.add_scalar(f'{prefix}/negative_log_likelihood', negative_log_likelihood.item(), step)
         likelihood = torch.exp(-negative_log_likelihood).item()
         tb_writer.add_scalar(f'{prefix}/likelihood', likelihood, step)
         perplexity = torch.exp(negative_log_likelihood).item()
