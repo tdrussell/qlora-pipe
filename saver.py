@@ -213,9 +213,9 @@ class Saver:
             self.save_model('best_loss')
             if is_main_process():
                 if self.old_best is not None:
-                    print(f"New best loss: {self.best_loss:.4f} from {self.old_best:.4f} (Δ{self.old_best - self.best_loss:.4f} = {100 * (self.old_best - self.best_loss) / self.old_best:.2f}%)")
+                    print(f"New best evaluation loss: {self.best_loss:.4f} from {self.old_best:.4f} (Δ{self.old_best - self.best_loss:.5f} [{100 * (1 - self.best_loss / self.old_best):.2f}%])")
                 else:
-                    print(f"New best loss: {self.best_loss:.4f}")
+                    print(f"New best evaluation loss: {self.best_loss:.4f}")
                 os.replace(os.path.join(self.save_root, '.pending_save_best_loss'), os.path.join(self.save_root, 'best_loss.txt'))
 
         if need_to_checkpoint(self.config) or should_manually_save:
@@ -231,7 +231,7 @@ class Saver:
             if self.best_loss is None:
                 print(f"Evaluation loss: {loss:.4f}")
             elif loss >= self.best_loss:
-                print(f"Evaluation loss: {loss:.4f} (best: {self.best_loss:.4f}, Δ: {self.best_loss - loss:.4f} = {100 * (self.best_loss - loss) / self.best_loss:.2f}%)")
+                print(f"Evaluation loss: {loss:.4f} (best: {self.best_loss:.4f}, Δ: {self.best_loss - loss:.5f} [{100 * (1 - loss / self.best_loss):.2f}%])")
             if self.best_loss is None or loss < self.best_loss:
                 self.old_best = self.best_loss
                 self.best_loss = loss
