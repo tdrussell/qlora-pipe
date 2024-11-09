@@ -1,33 +1,43 @@
 # Usage: python merge_lora.py input_path lora_path output_path
 # Output path is created if it doesn't exist
 
-import sys
 import os
 from pathlib import Path
 import shutil
 
+import argparse
 import torch
 import safetensors
 import peft
 
 from tqdm import tqdm
 
-input_path, lora_path, output_path = [Path(x) for x in sys.argv[1:]]
+parser = argparse.ArgumentParser()
+parser.add_argument("input_path", type=str, help="The path to the input directory.")
+parser.add_argument("lora_path", type=str, help="The path to the LoRA directory.")
+parser.add_argument("output_path", type=str, help="The path to the output directory.")
+parser.add_argument("--no-gpu", action="store_true", help="Use CPU for merging.")
+args = parser.parse_args()
+
+input_path, lora_path, output_path = Path(args.input_path), Path(args.lora_path), Path(args.output_path)
 os.makedirs(output_path, exist_ok=True)
 
 lora_config = peft.LoraConfig.from_json_file(lora_path / 'adapter_config.json')
 scale = lora_config['lora_alpha'] / lora_config['r']
+
+device = "cpu" if args.no_gpu else "cuda"
 
 print('Loading LoRA model...')
 
 # Check if we have adapter_model.bin or adapter_model.safetensors
 if (lora_path / 'adapter_model.safetensors').exists():
     lora_state = safetensors.torch.load_file(lora_path / 'adapter_model.safetensors')
-    # Move mapped entries to cuda
-    for key, value in tqdm(lora_state.items()):
-        lora_state[key] = value.to('cuda')
+    if not args.no_gpu:
+        # Move mapped entries to cuda
+        for key, value in tqdm(lora_state.items()):
+            lora_state[key] = value.to('cuda')
 else:
-    lora_state = torch.load(lora_path / 'adapter_model.bin', map_location='cuda')
+    lora_state = torch.load(lora_path / 'adapter_model.bin', map_location=device)
 
 def find_lora_weights(key):
     lora_A = None
@@ -60,15 +70,16 @@ for filepath in input_path.glob('*'):
 print('Merging and copying state_dict to output')
 for shard in (pbar := tqdm(shards)):
     tensors = {}
-    with safetensors.safe_open(shard, framework='pt', device='cuda') as f:
+    with safetensors.safe_open(shard, framework='pt', device=device) as f:
         metadata = f.metadata()
         for key in f.keys():
             tensor = f.get_tensor(key)
             lora_A, lora_B = find_lora_weights(key)
             if lora_A is not None:
                 pbar.set_description(f'found lora weights for {key}: {lora_A.size()}, {lora_B.size()}')
-                delta = (lora_B @ lora_A) * scale
-                delta = delta.to(tensor.dtype)
-                tensor += delta
+                old_type = tensor.dtype
+                tensor = tensor.to(torch.float32)
+                tensor += scale * lora_B.to(torch.float32) @ lora_A.to(torch.float32)
+                tensor = tensor.to(old_type)
             tensors[key] = tensor
         safetensors.torch.save_file(tensors, output_path / shard.name, metadata=metadata)
