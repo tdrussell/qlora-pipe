@@ -151,6 +151,7 @@ def evaluate(model_engine, eval_dataloaders, tb_writer, step, eval_gradient_accu
     return sum(loss) / len(loss) if len(loss) > 0 else None
 
 
+"""
 def apply_max_norm_regularization(model, config):
     # modifed from https://github.com/kohya-ss/sd-scripts/blob/main/networks/lora.py
     A_keys = []
@@ -184,6 +185,163 @@ def apply_max_norm_regularization(model, config):
         else:
             ratio = 1.0
         scalednorm = W.norm() * ratio
+        norms.append(scalednorm.item())
+
+    if len(norms) > 0:
+        norms = torch.tensor(norms, dtype=torch.float32)
+        if torch.any(torch.isnan(norms)):
+            raise RuntimeError(f'NaN detected in norms, probably some/all weights are NaN')
+        avg_norm = sum(norms) / len(norms)
+        max_norm = max(norms)
+    else:
+        avg_norm = 0
+        max_norm = 0
+    return keys_scaled, avg_norm, max_norm, norms
+"""
+
+def apply_max_norm_regularization(model, config):
+    """
+    Apply max norm regularization to the low-rank matrices A and B to cap the approximate Frobenius norm
+    of E = CᵗC - I, where C = I + A Bᵗ. This encourages C to be close to orthogonal.
+
+    Mathematical Justification:
+
+    We aim to control the deviation of the matrix C = I + A Bᵗ from being orthogonal by capping the
+    approximate Frobenius norm of E = CᵗC - I.
+
+    Approximate Frobenius Norm of E:
+
+        E_norm² ≈ 2 * ||AᵗB||_F² + 2 * Tr(AᵗA * BᵗB)
+
+    This approximation uses the leading second-order terms and neglects higher-order terms that become
+    negligible for large n (the dimension of A and B).
+
+    Scaling Relationships:
+
+    - When we keep the Frobenius norm of C = A Bᵗ constant (e.g., ||C||_F = 1.0) and increase n:
+
+        ||A||_F ∝ 1 / √n
+        ||B||_F ∝ 1 / √n
+
+    - The norms of A and B decrease as n increases, since the entries of A and B become smaller to maintain
+      the constant norm of C.
+
+    Ratio of Higher-Order to Leading Terms:
+
+    - The contribution of higher-order terms (neglected in the approximation) relative to the leading terms
+      scales as:
+
+        Error Ratio ∝ (||A||_F * ||B||_F)² ∝ (1 / n)
+
+    Conclusion:
+
+    - Approximation Error ∝ 1 / n
+    - As n increases, the approximation error decreases inversely with n.
+    - The approximation error is independent of k (the rank of A and B), given that k << n.
+
+    Implications:
+
+    - For large n (e.g., n = 8192) and smallish norms (e.g., maintaining ||C||_F = 1.0), the approximation becomes
+      extremely accurate.
+    - The negligible higher-order terms ensure that the approximate Frobenius norm closely matches the exact
+      norm without intensive computation.
+    - This allows us to efficiently enforce the orthogonality constraint on C by operating on small k x k
+      matrices, making it practical for large-scale problems.
+
+    Computational Complexity:
+
+    - Exact Computation (Without Approximation):
+
+        - Computing the exact Frobenius norm squared ||E||_F² without approximation involves operations on
+          n x n matrices.
+        - **Forward Pass Complexity:** O(n³)
+            - Operations include matrix multiplications and computing norms of n x n matrices.
+        - **Backward Pass Complexity (Autodiff Gradient Computations):** O(n³)
+            - Gradients involve derivatives with respect to large n x n matrices.
+        - This is computationally intensive and impractical for large n due to high time and memory requirements.
+
+    - Approximate Computation:
+
+        - The approximation enables computations using only k x k and n x k matrices.
+        - **Forward Pass Complexity:** O(n k²)
+            - Operations involve:
+                - Multiplying Aᵗ (k x n) with B (n x k) to get AᵗB (k x k).
+                - Computing AᵗA and BᵗB (both k x k matrices).
+                - Calculating traces and norms of k x k matrices.
+        - **Backward Pass Complexity (Autodiff Gradient Computations):** O(n k²)
+            - Gradients are computed with respect to A and B, involving operations on n x k matrices.
+        - This reduction from O(n³) to O(n k²) makes the method computationally feasible for large n when k << n.
+
+    - Conclusion:
+
+        - By using the approximate Frobenius norm, we achieve significant computational savings while maintaining
+          accuracy for large n.
+        - The method scales well with n, allowing us to apply it to large-scale models without incurring prohibitive
+          computational costs.
+        - This efficiency is essential for practical applications in machine learning where models often operate
+          with very high-dimensional data.
+
+    The function below implements this regularization by scaling A and B when the approximate Frobenius norm
+    of E exceeds a specified maximum (max_norm). This scaling ensures that C remains close to orthogonal
+    without significantly impacting the model's learning capacity.
+
+    Parameters:
+        model: The neural network model containing the low-rank matrices A and B.
+        config: A dictionary containing configuration parameters, including:
+            - 'lora_alpha': The scaling factor for the low-rank updates.
+            - 'lora_rank': The rank (k) of the low-rank decomposition.
+            - 'scale_weight_norms': (Optional) The maximum allowed approximate Frobenius norm of E.
+
+    Returns:
+        keys_scaled: The number of times scaling was applied.
+        avg_norm: The average approximate Frobenius norm of E after scaling.
+        max_norm_value: The maximum approximate Frobenius norm of E after scaling.
+        norms: A list of the approximate Frobenius norms of E for each pair of A and B.
+    """
+
+    A_keys = []
+    B_keys = []
+    norms = []
+    keys_scaled = 0
+    lora_scale = config['lora_alpha'] / config['lora_rank']
+
+    state_dict = model.state_dict()
+    for key in state_dict.keys():
+        if 'lora_A' in key:
+            A_keys.append(key)
+            B_keys.append(key.replace('lora_A', 'lora_B'))
+
+    for i in range(len(A_keys)):
+        A = state_dict[A_keys[i]]
+        B = state_dict[B_keys[i]]
+        
+        # Compute approximate Frobenius norm of E = CᵗC - I
+        # Scale A and B by lora_scale to account for any scaling in the low-rank update
+        AtB = lora_scale * (A.T @ B)  # k x k matrix
+        AtB_norm_sq = torch.norm(AtB, p='fro') ** 2  # Scalar       
+        
+        AtA = lora_scale * (A.T @ A)  # k x k matrix
+        BtB = lora_scale * (B.T @ B)  # k x k matrix
+        trace_AtA_BtB = torch.trace(AtA @ BtB)  # Scalar
+        
+        # Approximate E_norm_sq using both leading terms
+        # E_norm_sq ≈ 2 * ||AᵗB||_F² + 2 * Tr(AᵗA * BᵗB)
+        E_norm_sq_approx = 2 * AtB_norm_sq + 2 * trace_AtA_BtB
+        E_norm = torch.sqrt(E_norm_sq_approx)           
+
+        if 'scale_weight_norms' in config:
+            max_norm = config['scale_weight_norms']
+            norm = E_norm.clamp(min=max_norm / 2)
+            desired = torch.clamp(norm, max=max_norm)           
+            ratio = desired.cpu() / norm.cpu()
+            if ratio != 1:
+                keys_scaled += 1
+                sqrt_ratio = ratio ** 0.5
+                state_dict[A_keys[i]] *= sqrt_ratio
+                state_dict[B_keys[i]] *= sqrt_ratio
+        else:
+            ratio = 1.0
+        scalednorm = E_norm * ratio
         norms.append(scalednorm.item())
 
     if len(norms) > 0:
