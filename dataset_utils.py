@@ -80,8 +80,8 @@ def load_raw_dataset(dataset_path, tokenizer, sequence_len, eval_size, overlap=0
 def load_axolotl_dataset(dataset_path, tokenizer, sequence_len, eval_size):
     with open(dataset_path, 'r') as f:
         cfg = yaml.safe_load(f.read())
-    if 'val_set_size' not in cfg and eval_size:
-        cfg['val_set_size'] = eval_size
+    if 'val_set_size' not in cfg:
+        cfg['val_set_size'] = 0 if eval_size is None else eval_size
     cfg['sequence_len'] = sequence_len
     cfg['tokenizer_config'] = 'dummy'
     # these two don't matter, but they have to be set
