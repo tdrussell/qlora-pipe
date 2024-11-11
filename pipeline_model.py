@@ -132,16 +132,31 @@ class ComputeMetrics(nn.Module):
             )
             loss_unreduced = loss_unreduced[valid_loss]
             loss_unreduced = loss_unreduced / self.focal_loss_gamma
+        elif self.loss_type == 'inverse_focal_loss':
+            # See "Rethinking Calibration of Deep Neural Networks: Do Not Be Afraid of Overconfidence" (Section 5.2)
+            # NOTE: The alternative of p^gamma (instead of (1+p)^gamma) might be useful for gradient ascent...
+            p = torch.exp(-cross_entropy_loss_unreduced)
+            loss_unreduced = (1+p)**self.focal_loss_gamma * cross_entropy_loss_unreduced
+        elif self.loss_type == 'exponentiated_cross_entropy_loss':
+            # See "Gradient as a Foundation for Building a Loss Function" (Section III.B)
+            # NOTE: This is a generalisation of their "Quadratic Cross-Entropy" loss (QCE: gamma=2, CE: gamma=1, etc).
+            loss_unreduced = cross_entropy_loss_unreduced**self.focal_loss_gamma / self.focal_loss_gamma
         else:
             raise NotImplementedError(self.loss_type)
         
         with torch.no_grad():
+            log_vocab_size = math.log(logits.size(-1))
             entropy = entropy_fn(shift_logits, self.logit_scale)[valid_loss]
-            negative_log_likelihood = cross_entropy_loss_unreduced.mean()
+            # Compute normalised entropy so we can compare between models with different vocab sizes
+            normalised_entropy = entropy / log_vocab_size         
+            # Compute the (negative) log-likelihood using the original *UNADJUSTED* Cross-Entropy loss.
+            log_likelihood = cross_entropy_loss_unreduced.mean()
+            # Compute McFadden's Pseudo-R² metric using log(vocab_size) as the null log-likelihood.
+            mcfaddens_pseudo_r2 = 1 - (log_likelihood / log_vocab_size)
             accuracies = top_k_accuracy(shift_logits, shift_labels, k_list=[1, 5, 20])
         loss = loss_unreduced.mean()
         loss_unreduced = loss_unreduced.detach()
-        return loss, loss_unreduced, entropy, negative_log_likelihood, *accuracies
+        return loss, loss_unreduced, entropy, normalised_entropy, log_likelihood, mcfaddens_pseudo_r2, *accuracies
 
 
 class PipelineModel(nn.Module):
