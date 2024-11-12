@@ -73,7 +73,7 @@ def write_metrics(tb_writer, prefix, metrics, step):
     if len(metrics) > 1:
         losses = metrics[1].view(-1)
         positive_losses = (losses > 0)
-        tb_writer.add_histogram(f'{prefix}/log_loss_hist',  torch.log(losses[positive_losses]), step)   
+        tb_writer.add_histogram(f'{prefix}/log_loss_hist',  torch.log(losses[positive_losses]), step)
         if not args.no_quantiles:
             sorted_losses, sorted_losses_idx = torch.sort(losses)
             quantiles = torch.tensor([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.96, 0.97, 0.98, 0.99, 0.999], dtype=torch.float32).to(losses.device)
@@ -113,7 +113,7 @@ def write_metrics(tb_writer, prefix, metrics, step):
         tb_writer.add_scalar(f'{prefix}/likelihood', likelihood, step)
         perplexity = torch.exp(log_likelihood).item()
         tb_writer.add_scalar(f'{prefix}/perplexity', perplexity, step)
-        
+
     if len(metrics) > 5:
         mcfaddens_pseudo_r2 = metrics[5].mean()
         tb_writer.add_scalar(f'{prefix}/mcfaddens_pseudo_r2', mcfaddens_pseudo_r2.item(), step)
@@ -169,7 +169,7 @@ def evaluate(model_engine, eval_dataloaders, tb_writer, step, eval_gradient_accu
         tb_writer.add_scalar('eval/eval_time_sec', duration, step)
     return sum(loss) / len(loss) if len(loss) > 0 else None
 
-"""
+
 def apply_max_norm_regularization(model, config):
     # modifed from https://github.com/kohya-ss/sd-scripts/blob/main/networks/lora.py
     A_keys = []
@@ -215,193 +215,7 @@ def apply_max_norm_regularization(model, config):
         avg_norm = 0
         max_norm = 0
     return keys_scaled, avg_norm, max_norm, norms
-"""
 
-def apply_max_norm_regularization(model, config):
-    """
-    Apply max-norm regularization to the low-rank matrices A and B to ensure that the matrix C = I + A Bᵗ remains
-    close to orthogonal by capping the approximate Frobenius norm of E = CᵗC - I. This process encourages the
-    singular values of C to be close to 1, promoting stability in the network.
-    
-    **Mathematical Justification:**
-    
-    - **Objective:**
-      - Control the deviation of C = I + BA from being orthogonal by limiting the Frobenius norm of E = CᵗC - I.
-    
-    - **Relation to Singular Values:**
-      - The squared Frobenius norm of E relates to the singular values (σₖ) of C:
-      
-        ||E||_F² = Σₖ (σₖ² - 1)²
-      
-      - Minimizing ||E||_F² encourages all σₖ to be close to 1, making C nearly orthogonal.
-    
-    - **Approximation of ||E||_F:**
-      - Computing ||E||_F exactly is computationally intensive for large matrices.
-      - We use an approximation involving leading second-order terms:
-      
-        E_norm² ≈ 2 ||AB||_F² + 2 Tr(AAᵗ * BᵗB) 
-      
-      - This approximation operates on small k x k matrices, making it efficient for large n (the dimension 
-        of A and B) when k ≪ n.
-    
-    **Scaling Relationships and Adjustment of max_norm:**
-    
-    - **Dependence on n and k:**
-      - The approximate E_norm squared scales with both n and k:
-
-        E_norm² ∝ n * k²
-      
-      - As n or k increases, E_norm increases proportionally.
-    
-    - **Adjusting max_norm:**
-      - To maintain consistent regularization when changing n or k, adjust max_norm proportionally:
-      
-        new_max_norm = (n_new / n_old) (k_new / k_old) old_max_norm
-      
-      - This ensures the regularization strength remains appropriate relative to the size of A and B.
-    
-    - **Implications of Not Adjusting max_norm:**
-      - If max_norm isn't adjusted, the regularization effect may become too strong or too weak, potentially
-        leading to underfitting or instability.
-    
-    **Computational Complexity:**
-    
-    - **Exact Computation (Impractical):**
-      - **Forward Pass:** O(n³)
-        - Involves operations on n x n matrices.
-      - **Backward Pass:** O(n³)
-        - Gradients with respect to large matrices are computationally expensive.
-      - **Conclusion:** Not feasible for large n.
-    
-    - **Approximate Computation (Efficient):**
-      - **Forward Pass:** O(n * k²)
-        - Operations involve n x k and k x k matrices.
-      - **Backward Pass:** O(n * k²)
-        - Gradients computed with respect to A and B (n x k matrices).
-      - **Conclusion:** Practical for large n when k ≪ n.
-    
-    **Implementation Details:**
-    
-    - **Scaling Mechanism:**
-      - Compute the approximate E_norm using the approximation.
-      - If E_norm exceeds max_norm:
-        - Compute scaling factor:
-        
-            ratio = desired_norm / current_norm
-            scaling_factor = sqrt(ratio)
-      
-        - Scale A and B:
-        
-            A_scaled = A * scaling_factor
-            B_scaled = B * scaling_factor
-      
-        - This reduces E_norm to be within the max_norm limit.
-    
-    - **Clamping Norms:**
-      - To prevent division by very small numbers, norms are clamped:
-        - Minimum norm: max_norm / 2
-        - Desired norm: up to max_norm
-    
-    - **Exception Handling:**
-      - If NaN values are detected in computed norms, a `RuntimeError` is raised, indicating potential numerical issues.
-    
-    **Parameters:**
-    
-    - `model`:
-      - The neural network model containing the low-rank matrices A and B.
-    
-    - `config` (dict):
-      - Configuration parameters including:
-        - `'lora_alpha'` (float): Scaling factor for the low-rank updates.
-        - `'lora_rank'` (int): The rank (k) of the low-rank decomposition.
-        - `'scale_weight_norms'` (float, optional): The maximum allowed approximate Frobenius norm of E (`max_norm`).
-          Should be adjusted proportionally with n and k.
-    
-    **Returns:**
-    
-    - `keys_scaled` (int):
-      - The number of times scaling was applied to pairs of A and B.
-    
-    - `avg_norm` (float):
-      - The average approximate Frobenius norm of E after scaling.
-    
-    - `max_norm_value` (float):
-      - The maximum approximate Frobenius norm of E after scaling.
-    
-    - `norms` (list of float):
-      - The approximate Frobenius norms of E for each pair of A and B.
-    
-    **Additional Notes:**
-    
-    - **Efficiency:**
-      - By operating on small matrices, the method efficiently enforces the orthogonality constraint on C,
-        crucial for large-scale models.
-    
-    - **Control Over Singular Values:**
-      - Capping E_norm indirectly controls the singular values of C, keeping them close to 1.
-    
-    - **Impact of Regularization Strength:**
-      - **Strong Regularization:**
-        - If max_norm is too small, A and B may be overly restricted, limiting the model's capacity to learn.
-      - **Weak Regularization:**
-        - If max_norm is too large, C may deviate from orthogonality, potentially causing instability.
-    
-    - **Relation to Orthogonal Procrustes Problem:**
-      - Minimizing ||E||_F² is similar to projecting C onto the set of orthogonal matrices, akin to the
-        orthogonal Procrustes problem, but avoids explicit singular value decomposition (SVD).
-    
-    """
-    A_keys = []
-    B_keys = []
-    norms = []
-    keys_scaled = 0
-    lora_scale = config['lora_alpha'] / config['lora_rank']
-
-    state_dict = model.state_dict()
-    for key in state_dict.keys():
-        if 'lora_A' in key:
-            A_keys.append(key)
-            B_keys.append(key.replace('lora_A', 'lora_B'))
-
-    for i in range(len(A_keys)):
-        A = state_dict[A_keys[i]]  # k x n matrix
-        B = state_dict[B_keys[i]]  # n x k matrix
-        
-        # Compute approximate Frobenius norm of E = CᵗC - I, where C = BA (n x n matrix):
-        # Using: ||CᵗC - I||_F² = 2 * ||AB||_F² + 2 * Tr(AAᵗ * BᵗB) + higher order terms
-        AB = lora_scale * (A @ B)     # k x k matrix
-        AB_norm_sq = torch.norm(AB, p='fro') ** 2
-        AAt = lora_scale * (A @ A.T)  # k x k matrix
-        BtB = lora_scale * (B.T @ B)  # k x k matrix
-        trace_AAt_BtB = torch.trace(AAt @ BtB)
-        E_norm_sq_approx = 2 * AB_norm_sq + 2 * trace_AAt_BtB
-        E_norm = torch.sqrt(E_norm_sq_approx)
-
-        if 'scale_weight_norms' in config:
-            max_norm = config['scale_weight_norms']
-            norm = E_norm.clamp(min=max_norm / 2)
-            desired = torch.clamp(norm, max=max_norm)           
-            ratio = desired.cpu() / norm.cpu()
-            if ratio != 1:
-                keys_scaled += 1
-                sqrt_ratio = ratio ** 0.5
-                state_dict[A_keys[i]] *= sqrt_ratio
-                state_dict[B_keys[i]] *= sqrt_ratio
-        else:
-            ratio = 1.0
-        scalednorm = E_norm * ratio
-        norms.append(scalednorm.item())
-
-    if len(norms) > 0:
-        norms = torch.tensor(norms, dtype=torch.float32)
-        if torch.any(torch.isnan(norms)):
-            raise RuntimeError(f'NaN detected in norms, probably some/all weights are NaN')
-        avg_norm = sum(norms) / len(norms)
-        max_norm = max(norms)
-    else:
-        avg_norm = 0
-        max_norm = 0
-    return keys_scaled, avg_norm, max_norm, norms
 
 def parse_layers_to_transform(spec):
     parts = spec.split(',')
