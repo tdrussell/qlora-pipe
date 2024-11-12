@@ -44,6 +44,7 @@ eval_steps = 100
 save_steps = 200
 checkpoint_every_n_minutes = 60
 eval_before_first_step = true  # do an eval before any training happens
+eval_after_last_step = false # do a final eval after the training completes
 # dtype to load the underlying model weights in
 model_weight_dtype = 'bfloat16'
 # dtype for the LoRA weights
