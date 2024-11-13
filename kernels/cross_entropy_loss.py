@@ -236,7 +236,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         div, mod = divmod(vocab_size, MAX_FUSED_SIZE)
         n_chunks = div + (mod != 0)
         losses = torch.empty(n_rows, dtype = torch.float32, device = "cuda")
-        
+
         if n_chunks == 1:
             # For small vocabs <= 65336 like Llama, Mistral
             BLOCK_SIZE, num_warps = calculate_settings(vocab_size)
