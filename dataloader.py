@@ -11,7 +11,7 @@ from deepspeed import comm as dist
 from tqdm import tqdm
 
 from axolotl.utils.collators import DataCollatorForSeq2Seq
-from utils import is_main_process
+from utils import count_str, is_main_process
 
 # A100 wants padding to multiple of 64, other cards are efficient with smaller, so just do 64
 PAD_TO_MULTIPLE = 64
@@ -98,7 +98,7 @@ class DistributedBatchSamper(torch.utils.data.Sampler):
                 largest_global_batch = global_batch_idx
         global_batches[0], global_batches[largest_global_batch] = global_batches[largest_global_batch], global_batches[0]
         if is_main_process():
-            print(f"{self.total_tokens/1000000:.2f}M tokens")
+            print(f"{count_str(self.total_tokens)} tokens")
 
         batches_for_this_rank = [global_batch[self.rank:len(global_batch):self.num_replicas] for global_batch in global_batches]
         self.indices = [[i for i, _ in batch] for batch in batches_for_this_rank]
