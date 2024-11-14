@@ -624,8 +624,8 @@ if __name__ == '__main__':
             # TODO: gather the weight norms across all stages in the pipelined model, not just the first.
             if lora_config is not None and len(norms) > 0:
                 tb_writer.add_scalar('train/weights_scaled', keys_scaled, step)
-                tb_writer.add_scalar('train/avg_weight_norm', avg_norm, step)
-                tb_writer.add_scalar('train/max_weight_norm', max_norm, step)
+                tb_writer.add_scalar('train/weight_norm_avg', avg_norm, step)
+                tb_writer.add_scalar('train/weight_norm_max', max_norm, step)
                 tb_writer.add_histogram('train/weight_norm_hist', norms, step)
             tb_writer.add_scalar('train/epoch', step/steps_per_epoch, step)
 
