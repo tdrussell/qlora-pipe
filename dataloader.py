@@ -11,7 +11,7 @@ from deepspeed import comm as dist
 from tqdm import tqdm
 
 from axolotl.utils.collators import DataCollatorForSeq2Seq
-from utils import *
+from utils import is_main_process
 
 # A100 wants padding to multiple of 64, other cards are efficient with smaller, so just do 64
 PAD_TO_MULTIPLE = 64
@@ -89,12 +89,16 @@ class DistributedBatchSamper(torch.utils.data.Sampler):
         # make sure the largest batch comes first to OOM sooner rather than later
         largest_global_batch = 0
         max_tokens = 0
+        self.total_tokens = 0
         for global_batch_idx, batch in enumerate(global_batches):
             total_batch_tokens = batch_size_tokens_after_padding(batch)
+            self.total_tokens += total_batch_tokens
             if total_batch_tokens > max_tokens:
                 max_tokens = total_batch_tokens
                 largest_global_batch = global_batch_idx
         global_batches[0], global_batches[largest_global_batch] = global_batches[largest_global_batch], global_batches[0]
+        if is_main_process():
+            print(f"{self.total_tokens/1000000:.2f}M tokens")
 
         batches_for_this_rank = [global_batch[self.rank:len(global_batch):self.num_replicas] for global_batch in global_batches]
         self.indices = [[i for i, _ in batch] for batch in batches_for_this_rank]
@@ -144,6 +148,7 @@ class PipelineDataLoader:
     def reset(self):
         self.epoch = 1
         self.num_batches_pulled = 0
+        self.processed_tokens = 0
         self._create_dataloader()
 
     def __iter__(self):
@@ -165,6 +170,7 @@ class PipelineDataLoader:
         for macro_batch in self.dataloader:
             self.num_batches_pulled += 1
             for batch in split_batch(macro_batch, self.gradient_accumulation_steps):
+                self.processed_tokens += batch[0][0].numel()
                 yield batch
 
     def _create_dataloader(self):
