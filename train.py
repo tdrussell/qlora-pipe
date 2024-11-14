@@ -25,7 +25,7 @@ from hqq.core import quantize as hqq_quantize
 from dataset_utils import load_datasets
 import dataloader
 from saver import Saver
-from utils import is_main_process, DTYPE_MAP
+from utils import eta_str, is_main_process, DTYPE_MAP
 import engine
 import llama_pipe
 import mixtral_pipe
@@ -484,6 +484,9 @@ if __name__ == '__main__':
         group_by_length=False if 'group_by_length' not in config else config['group_by_length'],
         batch_size_tokens=None if 'batch_size_tokens' not in config else config['batch_size_tokens'],
     )
+    total_tokens = train_dataloader.data_sampler.total_tokens * config['epochs']
+    model_engine.total_tokens = total_tokens
+    model_engine.token_counter = train_dataloader # TODO: figure out why self.train_dataloader is None
     model_engine.set_dataloader(train_dataloader)
     steps_per_epoch = len(train_dataloader) // model_engine.gradient_accumulation_steps()
     model_engine.total_steps = steps_per_epoch * config['epochs']
@@ -502,7 +505,7 @@ if __name__ == '__main__':
         print(f'eval_data_length: {eval_data_length}, eval_steps: {config["eval_steps"]}; evals per epoch: {evals_per_epoch}. '
               f'We will be spending approximately {fraction_evaling*100:.2f}% of our time evaluating.')
         if fraction_evaling > 0.15:
-            print(f'WARNING: eval dataset is unusually large compared to eval_steps. We will spend a lot of time evaluating. Lowering eval_size and/or bumping eval_steps is recommended.')
+            print('WARNING: eval dataset is unusually large compared to eval_steps. We will spend a lot of time evaluating. Lowering eval_size and/or bumping eval_steps is recommended.')
         print()
 
     # handle Deepspeed optimizer wrapper (e.g. BF16_Optimizer)
