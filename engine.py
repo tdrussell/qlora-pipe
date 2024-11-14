@@ -55,6 +55,8 @@ class CustomPipelineEngine(PipelineEngine):
         self.token_counter = None
         self.last_finished = 0
         self.etas = [deque(), deque()]
+        self.eval_time = None
+        self.evals_left = 0
 
 
     def train_batch(self):
@@ -83,6 +85,7 @@ class CustomPipelineEngine(PipelineEngine):
             token_sum = torch.tensor(self.token_counter.processed_tokens, device='cuda')
             dist.reduce(token_sum, 0)
             if self.global_rank == 0:
+                eval_rem = self.eval_time * self.evals_left if self.eval_time is not None else 0
                 token_sum = token_sum.item() / self.num_stages
                 elapsed = self.timers(TRAIN_BATCH_TIMER).elapsed(reset=True) / 1000.0
                 iter_time = elapsed / self.steps_per_print()
@@ -106,6 +109,7 @@ class CustomPipelineEngine(PipelineEngine):
                         fit = np.polyfit(self.etas[0], self.etas[1], 1) # , w=weights)
                         # ETA is (1) a constant per batch (i.e. fit[1] * remaining batches), and (2) a linear value that rises with token count (i.e. fit[0] * tokens left)
                         eta = fit[1] * (self.total_steps - self.global_steps) + fit[0] * (self.total_tokens - token_sum)
+                        eta += eval_rem
                         eta = f'eta: {eta_str(eta)}'
                     else:
                         fit = None
