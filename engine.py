@@ -54,7 +54,7 @@ class CustomPipelineEngine(PipelineEngine):
         self.total_tokens = None
         self.token_counter = None
         self.last_finished = 0
-        self.etas = [deque(), deque()]
+        self.elapsed_hist = [deque(), deque()]
         self.eval_time = None
         self.evals_left = 0
 
@@ -102,11 +102,11 @@ class CustomPipelineEngine(PipelineEngine):
                 else:
                     processed_tokens = token_sum - self.last_finished
                     tokens_per_second = processed_tokens / elapsed
-                    self.etas[0].append(processed_tokens)
-                    self.etas[1].append(iter_time)
+                    self.elapsed_hist[0].append(processed_tokens)
+                    self.elapsed_hist[1].append(iter_time)
                     # we avoid showing ETAs until we have at least 3 data samples as the polyfit is garbage otherwise
-                    if len(self.etas[0]) > 2:
-                        fit = np.polyfit(self.etas[0], self.etas[1], 1) # , w=weights)
+                    if len(self.elapsed_hist[0]) > 2:
+                        fit = np.polyfit(self.elapsed_hist[0], self.elapsed_hist[1], 1) # , w=weights)
                         # ETA is (1) a constant per batch (i.e. fit[1] * remaining batches), and (2) a linear value that rises with token count (i.e. fit[0] * tokens left)
                         eta = fit[1] * (self.total_steps - self.global_steps) + fit[0] * (self.total_tokens - token_sum)
                         eta += eval_rem
@@ -115,9 +115,9 @@ class CustomPipelineEngine(PipelineEngine):
                         fit = None
                         eta = ''
 
-                    while len(self.etas[0]) > 30:
-                        self.etas[0].popleft()
-                        self.etas[1].popleft()
+                    while len(self.elapsed_hist[0]) > 30:
+                        self.elapsed_hist[0].popleft()
+                        self.elapsed_hist[1].popleft()
                     # rolling_eta = sum(self.etas) / len(self.etas)
                     log(f'step: {self.global_steps:>5} / {self.total_steps:>5} '
                         f'loss: {self.agg_train_loss:0.4f} '
