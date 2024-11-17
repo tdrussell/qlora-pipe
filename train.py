@@ -13,8 +13,8 @@ import torch
 from torch import nn
 from torch.utils.tensorboard import SummaryWriter
 import transformers
-import peft
 from peft import LoraConfig, get_peft_model
+from peft.optimizers import create_loraplus_optimizer
 import deepspeed
 from deepspeed.runtime.pipe.module import LayerSpec
 import toml
@@ -444,34 +444,35 @@ if __name__ == '__main__':
         optim_config = config['optimizer']
         lr = optim_config['lr']
         optim_type = optim_config['type'].lower()
+        optimizer_kwargs = {
+            "params": model_parameters,
+            "lr": lr,
+            "betas": (optim_config.get('beta1', 0.9), optim_config.get('beta2', 0.99)),
+            "weight_decay": optim_config.get('weight_decay', 0.01),
+            "eps": optim_config.get('eps', 1e-6)
+        }
         if optim_type == 'adamw':
-            return deepspeed.ops.adam.FusedAdam(
-                model_parameters,
-                lr=lr,
-                betas=(optim_config.get('beta1', 0.9), optim_config.get('beta2', 0.99)),
-                weight_decay=optim_config.get('weight_decay', 0.01),
-                eps=optim_config.get('eps', 1e-6)
-            )
+            optimizer_cls = deepspeed.ops.adam.FusedAdam
         elif optim_type == 'adamw8bit':
-            return bitsandbytes.optim.AdamW8bit(
-                model_parameters,
-                lr=lr,
-                betas=(optim_config.get('beta1', 0.9), optim_config.get('beta2', 0.99)),
-                weight_decay=optim_config.get('weight_decay', 0.01),
-                eps=optim_config.get('eps', 1e-6)
-            )
+            optimizer_cls = bitsandbytes.optim.AdamW8bit
         elif optim_type == 'adamw_kahan':
             import optimi
-            return optimi.AdamW(
-                model_parameters,
-                lr=lr,
-                betas=(optim_config.get('beta1', 0.9), optim_config.get('beta2', 0.99)),
-                weight_decay=optim_config.get('weight_decay', 0.01),
-                kahan_sum=optim_config.get('kahan_sum', True),
-                eps=optim_config.get('eps', 1e-6)
-            )
+            optimizer_cls = optimi.AdamW
+            optimizer_kwargs['kahan_sum'] = optim_config.get('kahan_sum', True)
         else:
             raise NotImplementedError(optim_type)
+        if optim_config.get('use_loraplus', False):
+            loraplus_lr_ratio = optim_config.get('loraplus_lr_ratio', 16)
+            # TODO: handle params being thrown out here; why is it included in the first place?
+            # delete 'params' from optimizer_kwargs
+            del optimizer_kwargs['params']
+            return create_loraplus_optimizer(
+                model=pipeline_model,
+                optimizer_cls=optimizer_cls,
+                loraplus_lr_ratio=loraplus_lr_ratio,
+                **optimizer_kwargs
+            )
+        return optimizer_cls(**optimizer_kwargs)
 
     model_engine, optimizer = engine.initialize(
         args=args,
@@ -602,7 +603,7 @@ if __name__ == '__main__':
 
     epoch = train_dataloader.epoch
 
-    if 'eval_before_first_step' in config and config['eval_before_first_step'] and not resume_from_checkpoint:
+    if config.get('eval_before_first_step', False) and not resume_from_checkpoint:
         loss = evaluate(model_engine, eval_dataloaders, tb_writer, 0, eval_gradient_accumulation_steps)
         saver.append_eval_results(loss, save_best=False)
 
@@ -636,6 +637,10 @@ if __name__ == '__main__':
         saver.process_step(step)
 
         step += 1
+
+    if ((step - 1) % config['eval_steps'] != 0) and config.get('eval_after_last_step', False):
+        loss = evaluate(model_engine, eval_dataloaders, tb_writer, step - 1, eval_gradient_accumulation_steps)
+        saver.append_eval_results(loss)
 
     if is_main_process():
         print('TRAINING COMPLETE!')
