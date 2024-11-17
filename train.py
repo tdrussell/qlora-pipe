@@ -576,7 +576,7 @@ if __name__ == '__main__':
 
     epoch = train_dataloader.epoch
 
-    if 'eval_before_first_step' in config and config['eval_before_first_step'] and not resume_from_checkpoint:
+    if config.get('eval_before_first_step', False) and not resume_from_checkpoint:
         loss = evaluate(model_engine, eval_dataloaders, tb_writer, 0, eval_gradient_accumulation_steps)
         saver.append_eval_results(loss, save_best=False)
 
@@ -610,6 +610,10 @@ if __name__ == '__main__':
         saver.process_step(step)
 
         step += 1
+
+    if ((step - 1) % config['eval_steps'] != 0) and config.get('eval_after_last_step', False):
+        loss = evaluate(model_engine, eval_dataloaders, tb_writer, step - 1, eval_gradient_accumulation_steps)
+        saver.append_eval_results(loss)
 
     if is_main_process():
         print('TRAINING COMPLETE!')
