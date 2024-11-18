@@ -49,7 +49,7 @@ def entropy_fn(logits):
     # memory usage is huge. Chuck size of 128 seems good enough for now.
     for logits_chuck in torch.split(logits, 128):
         result.append(torch.distributions.Categorical(logits=logits_chuck).entropy())
-    return torch.cat(result)
+    return torch.cat(result).float()
 
 
 def top_k_accuracy(logits, labels, k_list, ignore_index=-100):

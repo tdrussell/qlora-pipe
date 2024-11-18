@@ -83,7 +83,7 @@ class LmHeadPipe(nn.Module):
 
     def forward(self, inputs):
         hidden_states, labels = inputs
-        return self.lm_head(hidden_states)*self.logit_scale, labels
+        return self.lm_head(hidden_states*self.logit_scale), labels
 
 
 class Gemma2LmHeadPipe(nn.Module):
