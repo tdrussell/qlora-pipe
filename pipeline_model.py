@@ -42,15 +42,14 @@ def set_data(module, data):
         module.weight.data = data
 
 
-def entropy_fn(logits, logit_scale=1.0):
+def entropy_fn(logits):
     result = []
-    # There is a very wide range of chunk sizes that cause no increase in memory reported by
+    # There is a very wide range of chuck sizes that cause no increase in memory reported by
     # nvidia-smi (Torch re-using blocks of memory?). If you try to compute it as one tensor,
-    # memory usage is huge. Chunk size of 128 seems good enough for now.
-    for logits_chunk in torch.split(logits, 128):
-        logits_chunk = logit_scale * logits_chunk
-        result.append(torch.distributions.Categorical(logits=logits_chunk).entropy())
-    return torch.cat(result).float()
+    # memory usage is huge. Chuck size of 128 seems good enough for now.
+    for logits_chuck in torch.split(logits, 128):
+        result.append(torch.distributions.Categorical(logits=logits_chuck).entropy())
+    return torch.cat(result)
 
 
 def top_k_accuracy(logits, labels, k_list, ignore_index=-100):
@@ -81,17 +80,13 @@ class LayerSpec(ds_pipe_module.LayerSpec):
 class ComputeMetrics(nn.Module):
     def __init__(
             self,
-            logit_scale=1.0,
             loss_type='cross_entropy_loss',
             focal_loss_gamma=0
         ):
         super().__init__()
-        self.logit_scale = logit_scale
         self.loss_type = loss_type.lower()
         self.focal_loss_gamma = focal_loss_gamma
 
-        if self.logit_scale <= 0:
-            raise ValueError("logit_scale must be greater than 0")
         if self.loss_type == 'cross_entropy_loss' and self.focal_loss_gamma != 0:
             raise ValueError("focal_loss_gamma can't be used with 'cross_entropy_loss' function")
         elif self.loss_type != 'cross_entropy_loss' and self.focal_loss_gamma <= 0:
@@ -110,11 +105,7 @@ class ComputeMetrics(nn.Module):
         shift_labels = shift_labels.to(shift_logits.device)
         valid_loss = (shift_labels >= 0)
 
-        cross_entropy_loss_unreduced = Fast_CrossEntropyLoss.apply(
-            shift_logits,
-            shift_labels,
-            self.logit_scale
-        )
+        cross_entropy_loss_unreduced = Fast_CrossEntropyLoss.apply(shift_logits, shift_labels)
         cross_entropy_loss_unreduced = cross_entropy_loss_unreduced[valid_loss]
 
         if self.loss_type == 'cross_entropy_loss':
@@ -126,11 +117,7 @@ class ComputeMetrics(nn.Module):
         elif self.loss_type == 'focal_loss_star':
             # See https://arxiv.org/abs/1708.02002 (Appendix A/B)
             # NOTE: The use of Beta makes no sense for the multinomial case as it's invariant to translation
-            loss_unreduced = Fast_CrossEntropyLoss.apply(
-                shift_logits,
-                shift_labels,
-                self.logit_scale * self.focal_loss_gamma
-            )
+            loss_unreduced = Fast_CrossEntropyLoss.apply(shift_logits, shift_labels, self.focal_loss_gamma)
             loss_unreduced = loss_unreduced[valid_loss]
             loss_unreduced = loss_unreduced / self.focal_loss_gamma
         elif self.loss_type == 'inverse_focal_loss':
@@ -147,7 +134,7 @@ class ComputeMetrics(nn.Module):
         
         with torch.no_grad():
             log_vocab_size = math.log(logits.size(-1))
-            entropy = entropy_fn(shift_logits, self.logit_scale)[valid_loss]
+            entropy = entropy_fn(shift_logits)[valid_loss]
             # Compute normalised entropy so we can compare between models with different vocab sizes
             normalised_entropy = entropy / log_vocab_size         
             # Compute the (negative) log-likelihood using the original *UNADJUSTED* Cross-Entropy loss.
