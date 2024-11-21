@@ -535,11 +535,16 @@ if __name__ == '__main__':
     # handle Deepspeed optimizer wrapper (e.g. BF16_Optimizer)
     optimizer = getattr(optimizer, 'optimizer', optimizer)
 
+    warmup_steps = config.get('warmup_steps', 0)
+    # Fractional values less than 1 are converted into "fraction of epoch" worth of steps
+    if 0 < warmup_steps < 1:
+        warmup_steps = int(warmup_steps * steps_per_epoch)
+
     if 'lr_scheduler' not in config or config['lr_scheduler'] == 'constant' or config['lr_scheduler'] == 'none':
         lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1.0)
     elif config['lr_scheduler'] == 'cosine':
         total_steps = steps_per_epoch * config['epochs']
-        total_steps -= config['warmup_steps'] if 'warmup_steps' in config else 0
+        total_steps -= warmup_steps
         # Normally, you would pass the lr_scheduler to deepspeed.initialize(). But we need the
         # global batch_size in order to make the lr_scheduler.
         lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, total_steps)
@@ -548,7 +553,7 @@ if __name__ == '__main__':
 
     load_optimizer_states = config.get('load_optimizer_states', True)
     # if resuming and not loading optimizer states, we can't use warmup or the LR never changes from the initial value (still don't know why)
-    if 'warmup_steps' in config and config['warmup_steps'] > 0 and load_optimizer_states:
+    if warmup_steps > 0 and load_optimizer_states:
         warmup_steps = config['warmup_steps']
         warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1/warmup_steps, total_iters=warmup_steps)
         lr_scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, schedulers=[warmup_scheduler, lr_scheduler], milestones=[warmup_steps])
