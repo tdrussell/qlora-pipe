@@ -169,52 +169,62 @@ def evaluate(model_engine, eval_dataloaders, tb_writer, step, eval_gradient_accu
         tb_writer.add_scalar('eval/eval_time_sec', duration, step)
     return sum(loss) / len(loss) if len(loss) > 0 else None
 
-
-def apply_max_norm_regularization(model, config):
-    # modifed from https://github.com/kohya-ss/sd-scripts/blob/main/networks/lora.py
-    A_keys = []
-    B_keys = []
+def apply_lora_norm_regularization(model, config, lr):
+    # max-norm stuff modified from https://github.com/kohya-ss/sd-scripts/blob/main/networks/lora.py
     norms = []
     keys_scaled = 0
+    
     lora_scale = config['lora_alpha'] / config['lora_rank']
-
-    state_dict = model.state_dict()
-    for key in state_dict.keys():
-        if 'lora_A' in key:
-            A_keys.append(key)
-            B_keys.append(key.replace('lora_A', 'lora_B'))
-
-    for i in range(len(A_keys)):
-        A = state_dict[A_keys[i]]
-        B = state_dict[B_keys[i]]
-        W = B @ A
-        W *= lora_scale
-
-        if 'scale_weight_norms' in config:
-            max_norm = config['scale_weight_norms']
-            norm = W.norm().clamp(min=max_norm / 2)
-            desired = torch.clamp(norm, max=max_norm)
-            ratio = desired.cpu() / norm.cpu()
-            sqrt_ratio = ratio**0.5
-            if ratio != 1:
-                keys_scaled += 1
-                state_dict[A_keys[i]] *= sqrt_ratio
-                state_dict[B_keys[i]] *= sqrt_ratio
-        else:
-            ratio = 1.0
-        scalednorm = W.norm() * ratio
-        norms.append(scalednorm.item())
+    weight_decay = config.get('lora_weight_decay', 0.0)
+    max_norm = config.get('lora_max_norm', 0.0)
+    
+    for name, param in model.named_parameters():
+        if 'lora_A' in name:
+            A = param
+            B_name = name.replace('lora_A', 'lora_B')
+            B = next(p for n, p in model.named_parameters() if n == B_name)
+            
+            with torch.no_grad():
+                W = lora_scale * (B @ A)
+    
+                # Apply decoupled weight decay (indirectly) to the composite matrix BA if specified
+                # Using L = λ⋅½||W||_F²:
+                #    ∂L/∂W = λ⋅W, as ∂(½||W||_F²)/∂W = W
+                #    ∂L/∂A = s⋅Bᵗ(∂L/∂W) = λ⋅s⋅BᵗW
+                #    ∂L/∂B = s⋅(∂L/∂W)Aᵗ = λ⋅s⋅WAᵗ
+                if weight_decay > 0:                      
+                    grad_A = weight_decay * lora_scale * (B.t() @ W)
+                    grad_B = weight_decay * lora_scale * (W @ A.t())
+                    A -= lr * grad_A
+                    B -= lr * grad_B
+                    W = lora_scale * (B @ A)
+    
+                # Apply max-norm regularisation if specified
+                if max_norm > 0:
+                    norm = W.norm().clamp(min=max_norm / 2)
+                    desired = torch.clamp(norm, max=max_norm)
+                    ratio = desired.cpu() / norm.cpu()
+                    if ratio != 1:
+                        keys_scaled += 1
+                        sqrt_ratio = ratio ** 0.5
+                        A *= sqrt_ratio
+                        B *= sqrt_ratio
+                else:
+                    ratio = 1.0
+        
+                scalednorm = W.norm() * ratio
+                norms.append(scalednorm.item())
 
     if len(norms) > 0:
         norms = torch.tensor(norms, dtype=torch.float32)
         if torch.any(torch.isnan(norms)):
-            raise RuntimeError(f'NaN detected in norms, probably some/all weights are NaN')
-        avg_norm = sum(norms) / len(norms)
-        max_norm = max(norms)
+            raise RuntimeError('NaN detected in norms, probably some/all weights are NaN')
+        avg_norm = norms.mean().item()
+        max_norm_val = norms.max().item()
     else:
-        avg_norm = 0
-        max_norm = 0
-    return keys_scaled, avg_norm, max_norm, norms
+        avg_norm = 0.0
+        max_norm_val = 0.0
+    return keys_scaled, avg_norm, max_norm_val, norms
 
 
 def parse_layers_to_transform(spec):
@@ -613,7 +623,11 @@ if __name__ == '__main__':
         metrics = model_engine.train_batch()
         train_dataloader.sync_epoch()
         if lora_config is not None:
-            keys_scaled, avg_norm, max_norm, norms = apply_max_norm_regularization(pipeline_model, config)
+            keys_scaled, avg_norm, max_norm, norms = apply_lora_norm_regularization(
+                pipeline_model,
+                config,
+                optimizer.param_groups[0]['lr']
+            )
 
         epoch = saver.process_epoch(epoch, step)
         if epoch is None:
