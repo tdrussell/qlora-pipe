@@ -38,6 +38,7 @@ parser.add_argument('--local_rank', type=int, default=-1,
                     help='local rank passed from distributed launcher')
 parser.add_argument('--debug_dataset', type=int, help='print out this many training examples and then quit')
 parser.add_argument('--resume_from_checkpoint', action='store_true', default=None, help='resume training from the most recent checkpoint')
+parser.add_argument('--no_quantiles', action='store_true', help='suppress output of quantile metrics')
 parser = deepspeed.add_config_arguments(parser)
 args = parser.parse_args()
 
@@ -66,44 +67,69 @@ def get_most_recent_run_dir(output_dir):
 
 
 def write_metrics(tb_writer, prefix, metrics, step):
-    rv = None
+    loss = metrics[0].mean().item()
+    tb_writer.add_scalar(f'{prefix}/loss', loss, step)
 
-    tb_writer.add_scalar(f'{prefix}/optimized_loss', metrics[0].mean().item(), step)
-
-    if len(metrics) >= 2:
+    if len(metrics) > 1:
         losses = metrics[1].view(-1)
-        rv = losses.mean().item()
-        sorted_losses, sorted_losses_idx = torch.sort(losses)
-        quantiles = torch.tensor([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.96, 0.97, 0.98, 0.99, 0.999], dtype=torch.float32).to(losses.device)
-        quantiles_idx = [int(len(losses)*quantile) for quantile in quantiles]
-        loss_quantiles = [sorted_losses[i] for i in quantiles_idx]
-        for quantile, value in zip(quantiles, loss_quantiles):
-            tb_writer.add_scalar(f'{prefix}/loss_quantile_{quantile:.3f}', value, step)
-        tb_writer.add_scalar(f'{prefix}/loss', rv, step)
-        tb_writer.add_histogram(f'{prefix}/log_loss_hist', torch.log(1e-8 + losses), step)
+        positive_losses = (losses > 0)
+        tb_writer.add_histogram(f'{prefix}/log_loss_hist',  torch.log(losses[positive_losses]), step)
+        if not args.no_quantiles:
+            sorted_losses, sorted_losses_idx = torch.sort(losses)
+            quantiles = torch.tensor([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.96, 0.97, 0.98, 0.99, 0.999], dtype=torch.float32).to(losses.device)
+            quantiles_idx = [int(len(losses)*quantile) for quantile in quantiles]
+            loss_quantiles = [sorted_losses[i] for i in quantiles_idx]
+            for quantile, value in zip(quantiles, loss_quantiles):
+                tb_writer.add_scalar(f'{prefix}/loss_quantile_{quantile:.3f}', value, step)
 
-    if len(metrics) >= 3:
+    if len(metrics) > 2:
         entropy = metrics[2].view(-1)
-        assert entropy.size() == losses.size()
         tb_writer.add_scalar(f'{prefix}/entropy', entropy.mean().item(), step)
-        sorted_entropy = entropy[sorted_losses_idx]
-        entropy_quantiles = []
-        for i, j in itertools.zip_longest(quantiles_idx, quantiles_idx[1:]):
-            entropy_quantiles.append(sorted_entropy[i:j].mean())
-        for quantile, value in zip(quantiles, entropy_quantiles):
-            tb_writer.add_scalar(f'{prefix}/entropy_quantile_{quantile:.3f}', value, step)
+        if not args.no_quantiles:
+            assert entropy.size() == losses.size()
+            sorted_entropy = entropy[sorted_losses_idx]
+            entropy_quantiles = []
+            for i, j in itertools.zip_longest(quantiles_idx, quantiles_idx[1:]):
+                entropy_quantiles.append(sorted_entropy[i:j].mean())
+            for quantile, value in zip(quantiles, entropy_quantiles):
+                tb_writer.add_scalar(f'{prefix}/entropy_quantile_{quantile:.3f}', value, step)
 
-    if len(metrics) >= 4:
-        tb_writer.add_scalar(f'{prefix}/top1_accuracy', metrics[3].mean().item(), step)
-        tb_writer.add_scalar(f'{prefix}/top5_accuracy', metrics[4].mean().item(), step)
-        tb_writer.add_scalar(f'{prefix}/top20_accuracy', metrics[5].mean().item(), step)
+    if len(metrics) > 3:
+        normalised_entropy = metrics[3].view(-1)
+        tb_writer.add_scalar(f'{prefix}/normalised_entropy', normalised_entropy.mean().item(), step)
+        if not args.no_quantiles:
+            assert normalised_entropy.size() == losses.size()
+            sorted_normalised_entropy = normalised_entropy[sorted_losses_idx]
+            normalised_entropy_quantiles = []
+            for i, j in itertools.zip_longest(quantiles_idx, quantiles_idx[1:]):
+                normalised_entropy_quantiles.append(sorted_normalised_entropy[i:j].mean())
+            for quantile, value in zip(quantiles, normalised_entropy_quantiles):
+                tb_writer.add_scalar(f'{prefix}/normalised_entropy_quantile_{quantile:.3f}', value, step)
 
-    if len(metrics) >= 7:
-        tb_writer.add_scalar(f'{prefix}/load_balancing_loss', metrics[6].mean().item(), step)
-    if len(metrics) >= 8:
-        tb_writer.add_scalar(f'{prefix}/alternate_load_balancing_loss', metrics[7].mean().item(), step)
+    if len(metrics) > 4:
+        log_likelihood = metrics[4].mean()
+        tb_writer.add_scalar(f'{prefix}/log_likelihood', log_likelihood.item(), step)
+        likelihood = torch.exp(-log_likelihood).item()
+        tb_writer.add_scalar(f'{prefix}/likelihood', likelihood, step)
+        perplexity = torch.exp(log_likelihood).item()
+        tb_writer.add_scalar(f'{prefix}/perplexity', perplexity, step)
 
-    return rv
+    if len(metrics) > 5:
+        mcfaddens_pseudo_r2 = metrics[5].mean()
+        tb_writer.add_scalar(f'{prefix}/mcfaddens_pseudo_r2', mcfaddens_pseudo_r2.item(), step)
+
+    if len(metrics) > 6:
+        tb_writer.add_scalar(f'{prefix}/top1_accuracy', metrics[6].mean().item(), step)
+        tb_writer.add_scalar(f'{prefix}/top5_accuracy', metrics[7].mean().item(), step)
+        tb_writer.add_scalar(f'{prefix}/top20_accuracy', metrics[8].mean().item(), step)
+
+    if len(metrics) > 9:
+        tb_writer.add_scalar(f'{prefix}/load_balancing_loss', metrics[9].mean().item(), step)
+
+    if len(metrics) > 10:
+        tb_writer.add_scalar(f'{prefix}/alternate_load_balancing_loss', metrics[10].mean().item(), step)
+
+    return loss
 
 def evaluate_single(model_engine, name, eval_dataloader, tb_writer, step, eval_gradient_accumulation_steps):
     orig_micro_batches = model_engine.micro_batches
@@ -599,8 +625,8 @@ if __name__ == '__main__':
             # TODO: gather the weight norms across all stages in the pipelined model, not just the first.
             if lora_config is not None and len(norms) > 0:
                 tb_writer.add_scalar('train/weights_scaled', keys_scaled, step)
-                tb_writer.add_scalar('train/avg_weight_norm', avg_norm, step)
-                tb_writer.add_scalar('train/max_weight_norm', max_norm, step)
+                tb_writer.add_scalar('train/weight_norm_avg', avg_norm, step)
+                tb_writer.add_scalar('train/weight_norm_max', max_norm, step)
                 tb_writer.add_histogram('train/weight_norm_hist', norms, step)
             tb_writer.add_scalar('train/epoch', step/steps_per_epoch, step)
 

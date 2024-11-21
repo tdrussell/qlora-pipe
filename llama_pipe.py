@@ -222,7 +222,13 @@ class LlamaForCausalLMPipe(PipelineModel, transformers.LlamaForCausalLM):
             result.append(LayerSpec(LlamaDecoderLayerPipe, self.loader_util, block))
         result.append(LayerSpec(LlamaRMSNormPipe, self.loader_util, self.model.norm, _estimated_size=0))
         result.append(LayerSpec(LmHeadPipe, self.loader_util, self.lm_head, _estimated_size=0))
-        result.append(LayerSpec(ComputeMetrics, focal_loss_gamma=self.focal_loss_gamma))
+        result.append(
+            LayerSpec(
+                ComputeMetrics,
+                loss_type=self.loss_type,
+                focal_loss_gamma=self.focal_loss_gamma
+            )
+        )
         return result
 
 
@@ -261,7 +267,13 @@ class Qwen2ForCausalLMPipe(PipelineModel, transformers.Qwen2ForCausalLM):
             result.append(LayerSpec(LlamaDecoderLayerPipe, self.loader_util, block))
         result.append(LayerSpec(LlamaRMSNormPipe, self.loader_util, self.model.norm, _estimated_size=0))
         result.append(LayerSpec(LmHeadPipe, self.loader_util, self.lm_head, _estimated_size=0))
-        result.append(LayerSpec(ComputeMetrics, focal_loss_gamma=self.focal_loss_gamma))
+        result.append(
+            LayerSpec(
+                ComputeMetrics,
+                loss_type=self.loss_type,
+                focal_loss_gamma=self.focal_loss_gamma
+            )
+        )
         return result
 
 class CohereForCausalLMPipe(PipelineModel, transformers.CohereForCausalLM):
@@ -303,8 +315,23 @@ class CohereForCausalLMPipe(PipelineModel, transformers.CohereForCausalLM):
         for block in self.model.layers:
             result.append(LayerSpec(LlamaDecoderLayerPipe, self.loader_util, block))
         result.append(LayerSpec(LlamaRMSNormPipe, self.loader_util, self.model.norm, _estimated_size=0))
-        result.append(LayerSpec(LmHeadPipe, self.loader_util, self.lm_head, logit_scale=self.logit_scale, tie_weights='model.embed_tokens.weight'))
-        result.append(LayerSpec(ComputeMetrics, focal_loss_gamma=self.focal_loss_gamma, _estimated_size=embedding_relative_size))
+        result.append(
+            LayerSpec(
+                LmHeadPipe,
+                self.loader_util,
+                self.lm_head,
+                logit_scale=self.logit_scale,
+                tie_weights='model.embed_tokens.weight'
+            )
+        )
+        result.append(
+            LayerSpec(
+                ComputeMetrics,
+                loss_type=self.loss_type,
+                focal_loss_gamma=self.focal_loss_gamma,
+                _estimated_size=embedding_relative_size
+            )
+        )
         return result
 
 
@@ -343,7 +370,13 @@ class Phi3ForCausalLMPipe(PipelineModel, transformers.Phi3ForCausalLM):
             result.append(LayerSpec(Phi3DecoderLayerPipe, self.loader_util, block))
         result.append(LayerSpec(LlamaRMSNormPipe, self.loader_util, self.model.norm, _estimated_size=0))
         result.append(LayerSpec(LmHeadPipe, self.loader_util, self.lm_head, _estimated_size=0))
-        result.append(LayerSpec(ComputeMetrics, focal_loss_gamma=self.focal_loss_gamma))
+        result.append(
+            LayerSpec(
+                ComputeMetrics,
+                loss_type=self.loss_type,
+                focal_loss_gamma=self.focal_loss_gamma
+            )
+        )
         return result
 
 class Gemma2ForCausalLMPipe(PipelineModel, transformers.Gemma2ForCausalLM):
@@ -388,7 +421,14 @@ class Gemma2ForCausalLMPipe(PipelineModel, transformers.Gemma2ForCausalLM):
             result.append(LayerSpec(LlamaDecoderLayerPipe, self.loader_util, block))
         result.append(LayerSpec(LlamaRMSNormPipe, self.loader_util, self.model.norm, _estimated_size=0))
         result.append(LayerSpec(Gemma2LmHeadPipe, self.loader_util, self.lm_head, self.config, tie_weights='model.embed_tokens.weight'))
-        result.append(LayerSpec(ComputeMetrics, focal_loss_gamma=self.focal_loss_gamma, _estimated_size=embedding_relative_size))
+        result.append(
+            LayerSpec(
+                ComputeMetrics,
+                loss_type=self.loss_type,
+                focal_loss_gamma=self.focal_loss_gamma,
+                _estimated_size=embedding_relative_size
+            )
+        )
         return result
 
 
@@ -427,5 +467,11 @@ class MistralForCausalLMPipe(PipelineModel, transformers.MistralForCausalLM):
             result.append(LayerSpec(LlamaDecoderLayerPipe, self.loader_util, block))
         result.append(LayerSpec(LlamaRMSNormPipe, self.loader_util, self.model.norm, _estimated_size=0))
         result.append(LayerSpec(LmHeadPipe, self.loader_util, self.lm_head, _estimated_size=0))
-        result.append(LayerSpec(ComputeMetrics, focal_loss_gamma=self.focal_loss_gamma))
+        result.append(
+            LayerSpec(
+                ComputeMetrics,
+                loss_type=self.loss_type,
+                focal_loss_gamma=self.focal_loss_gamma
+            )
+        )
         return result
