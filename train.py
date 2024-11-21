@@ -173,11 +173,11 @@ def apply_lora_norm_regularization(model, config, lr):
     # max-norm stuff modified from https://github.com/kohya-ss/sd-scripts/blob/main/networks/lora.py
     norms = []
     keys_scaled = 0
-    
+
     lora_scale = config['lora_alpha'] / config['lora_rank']
     weight_decay = config.get('lora_weight_decay', 0.0)
     max_norm = config.get('lora_max_norm', 0.0)
-    
+
     for name, param in model.named_parameters():
         if 'lora_A' in name:
             A = param
@@ -186,7 +186,7 @@ def apply_lora_norm_regularization(model, config, lr):
             
             with torch.no_grad():
                 W = lora_scale * (B @ A)
-    
+
                 # Apply decoupled weight decay (indirectly) to the composite matrix BA if specified
                 # Using L = λ⋅½||W||_F²:
                 #    ∂L/∂W = λ⋅W, as ∂(½||W||_F²)/∂W = W
@@ -218,13 +218,13 @@ def apply_lora_norm_regularization(model, config, lr):
     if len(norms) > 0:
         norms = torch.tensor(norms, dtype=torch.float32)
         if torch.any(torch.isnan(norms)):
-            raise RuntimeError('NaN detected in norms, probably some/all weights are NaN')
-        avg_norm = norms.mean().item()
-        max_norm_val = norms.max().item()
+            raise RuntimeError(f'NaN detected in norms, probably some/all weights are NaN')
+        avg_norm = sum(norms) / len(norms)
+        max_norm = max(norms)
     else:
-        avg_norm = 0.0
-        max_norm_val = 0.0
-    return keys_scaled, avg_norm, max_norm_val, norms
+        avg_norm = 0
+        max_norm = 0
+    return keys_scaled, avg_norm, max_norm, norms
 
 
 def parse_layers_to_transform(spec):
