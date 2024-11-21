@@ -64,6 +64,12 @@ for filepath in input_path.glob('*'):
     filepath = Path(filepath)
     if filepath.is_dir():
         continue
+    if filepath.suffix == ".gguf":
+        # Skip unrelated stray quantizations
+        continue
+    if filepath.suffix == ".safetensors":
+        # Consolidated, possibly
+        continue
     print(f'copying {filepath.name} to output')
     shutil.copy(filepath, output_path)
 
