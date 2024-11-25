@@ -195,8 +195,8 @@ def apply_lora_norm_regularization(model, config, lr):
                 if weight_decay > 0:                      
                     grad_A = weight_decay * lora_scale * (B.t() @ W)
                     grad_B = weight_decay * lora_scale * (W @ A.t())
-                    A -= lr * grad_A
-                    B -= lr * grad_B
+                    A.sub_(lr * grad_A)
+                    B.sub_(lr * grad_B)
                     W = lora_scale * (B @ A)
     
                 # Apply max-norm regularisation if specified
@@ -207,8 +207,8 @@ def apply_lora_norm_regularization(model, config, lr):
                     if ratio != 1:
                         keys_scaled += 1
                         sqrt_ratio = ratio ** 0.5
-                        A *= sqrt_ratio
-                        B *= sqrt_ratio
+                        A.mul_(sqrt_ratio)
+                        B.mul_(sqrt_ratio)
                 else:
                     ratio = 1.0
         
