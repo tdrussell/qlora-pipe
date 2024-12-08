@@ -545,9 +545,16 @@ if __name__ == '__main__':
     elif config['lr_scheduler'] == 'cosine':
         total_steps = steps_per_epoch * config['epochs']
         total_steps -= warmup_steps
+        lr_scheduler_kwargs = {
+            "optimizer": optimizer,
+            "T_max": total_steps,
+        }
+        if 'lr_min' in config:
+            lr_scheduler_kwargs["eta_min"] = config["lr_min"]
+
         # Normally, you would pass the lr_scheduler to deepspeed.initialize(). But we need the
         # global batch_size in order to make the lr_scheduler.
-        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, total_steps)
+        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(**lr_scheduler_kwargs)
     else:
         raise NotImplementedError()
 
