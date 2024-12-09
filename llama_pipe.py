@@ -221,7 +221,13 @@ class LlamaForCausalLMPipe(PipelineModel, transformers.LlamaForCausalLM):
         for block in self.model.layers:
             result.append(LayerSpec(LlamaDecoderLayerPipe, self.loader_util, block))
         result.append(LayerSpec(LlamaRMSNormPipe, self.loader_util, self.model.norm, _estimated_size=0))
-        result.append(LayerSpec(LmHeadPipe, self.loader_util, self.lm_head, _estimated_size=0))
+        result.append(LayerSpec(
+            LmHeadPipe,
+            self.loader_util,
+            self.lm_head,
+            tie_weights='model.embed_tokens.weight' if self.config.tie_word_embeddings else None,
+            _estimated_size=0
+        ))
         result.append(
             LayerSpec(
                 ComputeMetrics,
@@ -266,7 +272,13 @@ class Qwen2ForCausalLMPipe(PipelineModel, transformers.Qwen2ForCausalLM):
         for block in self.model.layers:
             result.append(LayerSpec(LlamaDecoderLayerPipe, self.loader_util, block))
         result.append(LayerSpec(LlamaRMSNormPipe, self.loader_util, self.model.norm, _estimated_size=0))
-        result.append(LayerSpec(LmHeadPipe, self.loader_util, self.lm_head, _estimated_size=0))
+        result.append(LayerSpec(
+            LmHeadPipe,
+            self.loader_util,
+            self.lm_head,
+            tie_weights='model.embed_tokens.weight' if self.config.tie_word_embeddings else None,
+            _estimated_size=0
+        ))
         result.append(
             LayerSpec(
                 ComputeMetrics,
