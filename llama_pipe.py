@@ -225,7 +225,7 @@ class LlamaForCausalLMPipe(PipelineModel, transformers.LlamaForCausalLM):
             LmHeadPipe,
             self.loader_util,
             self.lm_head,
-            tie_weights='model.embed_tokens.weight' if self.config.get('tie_word_embeddings', False) else None,
+            tie_weights='model.embed_tokens.weight' if self.config.tie_word_embeddings else None,
             _estimated_size=0
         ))
         result.append(
