@@ -549,8 +549,8 @@ if __name__ == '__main__':
             "optimizer": optimizer,
             "T_max": total_steps,
         }
-        if 'lr_min' in config:
-            lr_scheduler_kwargs["eta_min"] = config["lr_min"]
+        if 'lr_min' in optim_config:
+            lr_scheduler_kwargs["eta_min"] = optim_config["lr_min"]
 
         # Normally, you would pass the lr_scheduler to deepspeed.initialize(). But we need the
         # global batch_size in order to make the lr_scheduler.
