@@ -19,7 +19,7 @@ That being said, if something doesn't work right, or you would like it to suppor
 - Useful metrics logged to Tensorboard
 - Ability to specify a separate, fixed evaluation dataset
 - Train on multiple datasets simultaneously, with different sampling ratios per dataset
-- Models currently supported: Llama, Mistral, Mixtral, Qwen-1.5, Cohere (Command R), Phi-3 (mini and medium), Gemma-2
+- Models currently supported: Llama, Mistral, Mixtral, Qwen, Cohere (Command R), Phi-3 (mini and medium), Gemma-2
 
 ## Installing
 Clone the repository:
@@ -37,26 +37,8 @@ Install Miniconda: https://docs.conda.io/en/latest/miniconda.html
 
 Create the environment
 ```
-conda create -n training python=3.12
-conda activate training
-```
-
-Install Pytorch: https://pytorch.org/get-started/locally/
-
-Install cuda toolkit (make sure it matches the cuda version you used for Pytorch), e.g.:
-```
-conda install nvidia/label/cuda-12.1.1::cuda-toolkit
-```
-You could also try installing nvcc on its own, but installing the whole cuda toolkit was always the easiest for me.
-
-Install packaging and ninja first, for flash-attn:
-```
-pip install packaging ninja
-```
-
-(Optional) Install flash-attn manually if you want to specify how many jobs are used for compiling:
-```
-MAX_JOBS=4 pip install flash-attn --no-build-isolation
+conda create -n qlora-pipe python=3.12
+conda activate qlora-pipe
 ```
 
 Install the dependencies:
@@ -64,10 +46,15 @@ Install the dependencies:
 pip install -r requirements.txt
 ```
 
+Install nvcc:
+```
+conda install nvidia::cuda-nvcc
+```
+
 ## Training
 Edit the config files in the examples directory to your liking. At minimum, change the paths at the top to point to your model and desired output directory. Per-device batch size and gradient accumulation steps are specified in the Deepspeed JSON config file. Everything else is in the TOML config file. Launch the training script:
 ```
-NCCL_P2P_DISABLE="1" NCCL_IB_DISABLE="1" deepspeed --num_gpus=1 train.py --deepspeed --deepspeed_config examples/ds_config_7b.json --config examples/config_7b.toml
+NCCL_P2P_DISABLE="1" NCCL_IB_DISABLE="1" deepspeed --num_gpus=1 train.py --deepspeed --deepspeed_config examples/ds_config.json --config examples/config.toml
 ```
 RTX 4000 series needs those 2 enviroment variables set. Other GPUs may not need them.
 

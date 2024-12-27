@@ -1,3 +1,6 @@
+torch
+torchvision
+torchaudio
 accelerate
 bitsandbytes
 datasets
@@ -21,7 +24,6 @@ torch-optimi
 # minimum Axolotl dependencies for what we use
 addict
 optimum
-fschat
 pynvml
 evaluate
 wandb
@@ -30,3 +32,4 @@ colorama
 trl
 mlflow
 termcolor
+fastcore

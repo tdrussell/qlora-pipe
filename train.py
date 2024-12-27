@@ -10,7 +10,6 @@ import json
 import gc
 
 import torch
-from torch import nn
 from torch.utils.tensorboard import SummaryWriter
 import transformers
 from peft import LoraConfig, get_peft_model
@@ -19,7 +18,6 @@ import deepspeed
 from deepspeed.runtime.pipe.module import LayerSpec
 import toml
 import bitsandbytes
-from fastchat.conversation import register_conv_template, Conversation, SeparatorStyle
 from hqq.core import quantize as hqq_quantize
 
 from dataset_utils import load_datasets
@@ -357,17 +355,6 @@ def load_pipeline_model_with_lora(config, model_type):
 
 
 if __name__ == '__main__':
-    register_conv_template(
-        Conversation(
-            name='llama3',
-            system_template='<|start_header_id|>system<|end_header_id|>\n\n{system_message}<|eot_id|>',
-            roles=('<|start_header_id|>user<|end_header_id|>\n\n', '<|start_header_id|>assistant<|end_header_id|>\n\n'),
-            sep_style=SeparatorStyle.NO_COLON_SINGLE,
-            sep='<|eot_id|>',
-            stop_token_ids=[128001, 128009],
-        )
-    )
-
     # TODO: if resuming from checkpoint, probably should read all config files from checkpoint dir
     # rather than assume they are unchanged on the command line
     with open(args.config) as f:
@@ -440,8 +427,8 @@ if __name__ == '__main__':
 
     parameters_to_train = [p for p in pipeline_model.parameters() if p.requires_grad]
 
+    optim_config = config['optimizer']
     def get_optimizer(model_parameters):
-        optim_config = config['optimizer']
         lr = optim_config['lr']
         optim_type = optim_config['type'].lower()
         optimizer_kwargs = {
