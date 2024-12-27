@@ -399,8 +399,7 @@ if __name__ == '__main__':
         quit()
 
     # for testing
-    # train_data = train_data.select(list(range(100)))
-    # eval_data = eval_data.select(list(range(50)))
+    #train_data = train_data.select(list(range(100)))
 
     # if this is a new run, create a new dir for it
     if not resume_from_checkpoint and is_main_process():
@@ -569,6 +568,8 @@ if __name__ == '__main__':
         # if we skip loading the optimizer states, we need to step the LR scheduler so we start at the right value
         if not load_optimizer_states:
             model_engine.lr_scheduler.step()
+        if is_main_process():
+            print(f'Resuming training from checkpoint. Resuming at epoch: {train_dataloader.epoch}, step: {step}')
 
     if 'force_constant_lr' in config:
         model_engine.lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1.0)
@@ -613,9 +614,8 @@ if __name__ == '__main__':
         if lora_config is not None:
             keys_scaled, avg_norm, max_norm, norms = apply_max_norm_regularization(pipeline_model, config)
 
-        epoch = saver.process_epoch(epoch, step)
-        if epoch is None:
-            break
+        new_epoch = saver.process_epoch(epoch, step)
+        finished_epoch = True if new_epoch != epoch else False
 
         if is_main_process() and step % config['logging_steps'] == 0:
             write_metrics(tb_writer, 'train', metrics, step)
@@ -633,6 +633,11 @@ if __name__ == '__main__':
             saver.append_eval_results(loss)
 
         saver.process_step(step)
+
+        if finished_epoch:
+            epoch = new_epoch
+            if epoch is None:
+                break
 
         step += 1
 

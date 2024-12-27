@@ -139,12 +139,19 @@ class PipelineDataLoader:
             shuffle=shuffle,
             group_by_length=group_by_length,
         )
-        self.reset()
+
+        self.epoch = 1
+        self.num_batches_pulled = 0
+        self.next_micro_batch = None
+        self.recreate_dataloader = False
+        self._create_dataloader()
+        self.data = self._pull_batches_from_dataloader()
 
     def reset(self):
         self.epoch = 1
         self.num_batches_pulled = 0
-        self._create_dataloader()
+        self.next_micro_batch = None
+        self.data = self._pull_batches_from_dataloader()
 
     def __iter__(self):
         return self
@@ -153,19 +160,26 @@ class PipelineDataLoader:
         return len(self.data_sampler) * self.gradient_accumulation_steps
 
     def __next__(self):
+        if self.next_micro_batch == None:
+            self.next_micro_batch = next(self.data)
+        ret = self.next_micro_batch
         try:
-            macro_batch = next(self.data)
+            self.next_micro_batch = next(self.data)
         except StopIteration:
-            self._create_dataloader()
-            macro_batch = next(self.data)
+            if self.recreate_dataloader:
+                self._create_dataloader()
+                self.recreate_dataloader = False
+            self.data = self._pull_batches_from_dataloader()
+            self.num_batches_pulled = 0
+            self.next_micro_batch = next(self.data)
             self.epoch += 1
-        return macro_batch
+        return ret
 
     def _pull_batches_from_dataloader(self):
-        for macro_batch in self.dataloader:
+        for batch in self.dataloader:
             self.num_batches_pulled += 1
-            for batch in split_batch(macro_batch, self.gradient_accumulation_steps):
-                yield batch
+            for micro_batch in split_batch(batch, self.gradient_accumulation_steps):
+                yield micro_batch
 
     def _create_dataloader(self):
         data_collator = DataCollatorForSeq2Seq(self.tokenizer, pad_to_multiple_of=self.pad_to_multiple_of)
@@ -180,10 +194,7 @@ class PipelineDataLoader:
             pin_memory=True,
             batch_sampler=self.data_sampler,
             collate_fn=collate_fn,
-            #num_workers=self.num_local_io_workers,
         )
-        self.data = self._pull_batches_from_dataloader()
-        self.num_batches_pulled = 0
 
     def state_dict(self):
         return {
@@ -193,9 +204,15 @@ class PipelineDataLoader:
 
     def load_state_dict(self, state_dict):
         self.epoch = state_dict['epoch']
-        self.num_batches_pulled = state_dict['num_batches_pulled']
+        # -1 because by preloading the next micro_batch, it's always going to have one more batch
+        # pulled than the actual number of batches iterated by the caller.
+        self.num_batches_pulled = state_dict['num_batches_pulled'] - 1
+        self._create_dataloader()
         self.dataloader = accelerate.skip_first_batches(self.dataloader, self.num_batches_pulled)
         self.data = self._pull_batches_from_dataloader()
+        # Recreate the dataloader after the first pass so that it won't skip
+        # batches again (we only want it to skip batches the first time).
+        self.recreate_dataloader = True
 
     # Only the first and last stages in the pipeline pull from the dataloader. Parts of the code need
     # to know the epoch, so we synchronize the epoch so the processes that don't use the dataloader
