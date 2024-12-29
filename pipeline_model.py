@@ -4,6 +4,7 @@ from inspect import signature
 
 import torch
 from torch import nn
+import torch.nn.functional as F
 import transformers
 from deepspeed.accelerator import get_accelerator
 from transformers.integrations import get_keys_to_not_convert
@@ -77,72 +78,130 @@ class LayerSpec(ds_pipe_module.LayerSpec):
         return self.module_kwargs.get('_estimated_size', 1)
 
 
-class ComputeMetrics(nn.Module):
+# TODO: consider using Liger-Kernel fused loss implementations. The inputs are already set up to support this.
+# Would save VRAM, but some metrics could no longer be computed (e.g. entropy, accuracies).
+class OutputLayer(nn.Module):
     def __init__(
             self,
+            pipeline_model,
+            loader_util,
+            lm_head,
+            logit_scale=1.0,
             loss_type='cross_entropy_loss',
-            focal_loss_gamma=0
+            focal_loss_gamma=0,
+            tie_weights=None,
+            logit_softcapping=None,
         ):
         super().__init__()
+        # Assign list to prevent registering the nn.Module
+        self.pipeline_model = [pipeline_model]
+        # Unlike the other wrapper classes, this is called lm_head and not orig. Because this is directly a
+        # nn.Linear layer, it needs to keep the same attribute name so quantization knows not to quantize it.
+        self.lm_head = lm_head
+        self.logit_scale = logit_scale
         self.loss_type = loss_type.lower()
         self.focal_loss_gamma = focal_loss_gamma
+        if tie_weights:
+            self.lm_head.weight.original_name = tie_weights
+        self.logit_softcapping = logit_softcapping
+        loader_util.load_state_dict_into_module(self)
 
         if self.loss_type == 'cross_entropy_loss' and self.focal_loss_gamma != 0:
             raise ValueError("focal_loss_gamma can't be used with 'cross_entropy_loss' function")
-        elif self.loss_type != 'cross_entropy_loss' and self.focal_loss_gamma <= 0:
-            raise ValueError("focal_loss_gamma must be greater than 0 for the specified loss function")
 
     def forward(self, inputs):
-        logits, labels = inputs
-        shift_logits = logits
+        hidden_states, labels = inputs
+        labels = labels.to(hidden_states.device)
+        if self.logit_scale != 1.0:
+            hidden_states = hidden_states * self.logit_scale
+        logits = self.lm_head(hidden_states)
+        if self.logit_softcapping is not None and self.logit_softcapping > 0:
+            logits = logits / self.logit_softcapping
+            logits = torch.tanh(logits)
+            logits = logits * self.logit_softcapping
+
         extra_ignored_labels = torch.full((labels.shape[0], 1), -100, device=logits.device)
-        shift_labels = torch.hstack((labels[..., 1:], extra_ignored_labels))
+        labels = torch.hstack((labels[..., 1:], extra_ignored_labels))
         # Flatten the tokens
-        vocab_size = shift_logits.size(-1)
-        shift_logits = shift_logits.view(-1, vocab_size)
-        shift_labels = shift_labels.view(-1)
-        # Enable model parallelism
-        shift_labels = shift_labels.to(shift_logits.device)
-        valid_loss = (shift_labels >= 0)
+        vocab_size = logits.size(-1)
+        flat_logits = logits.view(-1, vocab_size)
+        flat_labels = labels.view(-1)
+        flat_loss_mask = (flat_labels >= 0)
 
-        cross_entropy_loss_unreduced = Fast_CrossEntropyLoss.apply(shift_logits, shift_labels)
-        cross_entropy_loss_unreduced = cross_entropy_loss_unreduced[valid_loss]
+        cross_entropy_loss = Fast_CrossEntropyLoss.apply(flat_logits, flat_labels)
 
+        loss = None
         if self.loss_type == 'cross_entropy_loss':
-            loss_unreduced = cross_entropy_loss_unreduced
+            cross_entropy_loss = cross_entropy_loss[flat_loss_mask]
+            loss_unreduced = cross_entropy_loss
         elif self.loss_type == 'focal_loss':
+            cross_entropy_loss = cross_entropy_loss[flat_loss_mask]
             # See https://arxiv.org/abs/1708.02002 (Section 3)
-            p = torch.exp(-cross_entropy_loss_unreduced)
-            loss_unreduced = (1-p)**self.focal_loss_gamma * cross_entropy_loss_unreduced
+            p = torch.exp(-cross_entropy_loss)
+            loss_unreduced = (1-p)**self.focal_loss_gamma * cross_entropy_loss
         elif self.loss_type == 'focal_loss_star':
+            cross_entropy_loss = cross_entropy_loss[flat_loss_mask]
             # See https://arxiv.org/abs/1708.02002 (Appendix A/B)
             # NOTE: The use of Beta makes no sense for the multinomial case as it's invariant to translation
-            loss_unreduced = Fast_CrossEntropyLoss.apply(shift_logits, shift_labels, self.focal_loss_gamma)
-            loss_unreduced = loss_unreduced[valid_loss]
+            loss_unreduced = Fast_CrossEntropyLoss.apply(flat_logits, flat_labels, self.focal_loss_gamma)
+            loss_unreduced = loss_unreduced[flat_loss_mask]
             loss_unreduced = loss_unreduced / self.focal_loss_gamma
         elif self.loss_type == 'inverse_focal_loss':
+            cross_entropy_loss = cross_entropy_loss[flat_loss_mask]
             # See "Rethinking Calibration of Deep Neural Networks: Do Not Be Afraid of Overconfidence" (Section 5.2)
             # NOTE: The alternative of p^gamma (instead of (1+p)^gamma) might be useful for gradient ascent...
-            p = torch.exp(-cross_entropy_loss_unreduced)
-            loss_unreduced = (1+p)**self.focal_loss_gamma * cross_entropy_loss_unreduced
+            p = torch.exp(-cross_entropy_loss)
+            loss_unreduced = (1+p)**self.focal_loss_gamma * cross_entropy_loss
         elif self.loss_type == 'exponentiated_cross_entropy_loss':
+            cross_entropy_loss = cross_entropy_loss[flat_loss_mask]
             # See "Gradient as a Foundation for Building a Loss Function" (Section III.B)
             # NOTE: This is a generalisation of their "Quadratic Cross-Entropy" loss (QCE: gamma=2, CE: gamma=1, etc).
-            loss_unreduced = cross_entropy_loss_unreduced**self.focal_loss_gamma / self.focal_loss_gamma
+            loss_unreduced = cross_entropy_loss**self.focal_loss_gamma / self.focal_loss_gamma
+        elif self.loss_type == 'dpo':
+            rl_config = self.pipeline_model[0].train_config['rl']
+            cross_entropy_loss = cross_entropy_loss.view_as(labels)  # unflatten
+            loss_mask = (labels >= 0)
+            logps = -(cross_entropy_loss * loss_mask).sum(-1)
+            half = cross_entropy_loss.size(0) // 2
+            chosen_logps = logps[:half]
+            rejected_logps = logps[half:]
+
+            if self.pipeline_model[0].dpo_reference_mode:
+                self.reference_chosen_logps = chosen_logps.detach()
+                self.reference_rejected_logps = rejected_logps.detach()
+                return torch.tensor(0., device=logits.device)
+
+            # log the language modeling loss metrics on the chosen completion
+            cross_entropy_loss = cross_entropy_loss[:half].flatten()[loss_mask[:half].flatten()]
+            loss_unreduced = cross_entropy_loss
+            flat_logits = logits[:half].view(-1, vocab_size)
+            flat_labels = labels[:half].view(-1)
+            flat_loss_mask = (flat_labels >= 0)
+
+            policy_chosen_logps = chosen_logps
+            policy_rejected_logps = rejected_logps
+            pi_logratios = policy_chosen_logps - policy_rejected_logps
+            ref_logratios = self.reference_chosen_logps - self.reference_rejected_logps
+            del self.reference_chosen_logps
+            del self.reference_rejected_logps
+            dpo_logits = pi_logratios - ref_logratios
+            loss = -F.logsigmoid(rl_config['dpo_beta'] * dpo_logits).mean()
         else:
             raise NotImplementedError(self.loss_type)
-        
+
         with torch.no_grad():
             log_vocab_size = math.log(logits.size(-1))
-            entropy = entropy_fn(shift_logits)[valid_loss]
+            entropy = entropy_fn(flat_logits)[flat_loss_mask]
             # Compute normalised entropy so we can compare between models with different vocab sizes
-            normalised_entropy = entropy / log_vocab_size         
+            normalised_entropy = entropy / log_vocab_size
             # Compute the (negative) log-likelihood using the original *UNADJUSTED* Cross-Entropy loss.
-            log_likelihood = cross_entropy_loss_unreduced.mean()
+            log_likelihood = cross_entropy_loss.mean()
             # Compute McFadden's Pseudo-R² metric using log(vocab_size) as the null log-likelihood.
             mcfaddens_pseudo_r2 = 1 - (log_likelihood / log_vocab_size)
-            accuracies = top_k_accuracy(shift_logits, shift_labels, k_list=[1, 5, 20])
-        loss = loss_unreduced.mean()
+            accuracies = top_k_accuracy(flat_logits, flat_labels, k_list=[1, 5, 20])
+        if loss is None:
+            # Normal language modeling loss types (e.g. not DPO)
+            loss = loss_unreduced.mean()
         loss_unreduced = loss_unreduced.detach()
         return loss, loss_unreduced, entropy, normalised_entropy, log_likelihood, mcfaddens_pseudo_r2, *accuracies
 
@@ -156,9 +215,12 @@ class PipelineModel(nn.Module):
         self.modules_to_not_quantize = get_keys_to_not_convert(self)
         self.loader_util = LoaderUtil(config['model'], quantization_config, self.modules_to_not_quantize)
         self.loss_type = config.get('loss_type', 'cross_entropy_loss').lower()
+        if rl_config := config.get('rl', None):
+            self.loss_type = rl_config['method']
         self.focal_loss_gamma = config.get('focal_loss_gamma', 0)
         if self.focal_loss_gamma > 0 and is_main_process():
             print(f'Optimizing using \'{self.loss_type}\' with gamma={self.focal_loss_gamma}')
+        self.dpo_reference_mode = False
 
         for name, p in self.named_parameters():
             p.original_name = name
@@ -166,6 +228,9 @@ class PipelineModel(nn.Module):
     # need to override this method
     def to_layer_specs(self):
         raise NotImplementedError()
+
+    def set_dpo_reference_mode(self, dpo_reference_mode):
+        self.dpo_reference_mode = dpo_reference_mode
 
 
 def _partial_module_name_match(full_name, list_to_match):

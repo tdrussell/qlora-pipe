@@ -1,0 +1,5 @@
+# This dataset is already in a format that can be directly loaded by the orpo.chat_template type.
+chat_template: llama3
+datasets:
+  - path: argilla/ultrafeedback-binarized-preferences-cleaned
+    type: orpo.chat_template

@@ -84,7 +84,7 @@ def write_metrics(tb_writer, prefix, metrics, step):
         entropy = metrics[2].view(-1)
         tb_writer.add_scalar(f'{prefix}/entropy', entropy.mean().item(), step)
         if not args.no_quantiles:
-            assert entropy.size() == losses.size()
+            assert entropy.size() == losses.size(), (entropy.size(), losses.size())
             sorted_entropy = entropy[sorted_losses_idx]
             entropy_quantiles = []
             for i, j in itertools.zip_longest(quantiles_idx, quantiles_idx[1:]):
@@ -305,7 +305,8 @@ def load_pipeline_model_with_lora(config, model_type):
             activation_checkpoint_interval=1,
             checkpointable_layers=checkpointable_layers,
             activation_checkpoint_func=checkpoint_func,
-            partition_method=partition_method
+            partition_method=partition_method,
+            model=model,
         )
     else:
         pipeline_model = engine.CustomPipelineModule(
@@ -393,6 +394,15 @@ if __name__ == '__main__':
                 print(item['attention_mask'][:1000])
                 print('labels:')
                 print(item['labels'][:1000])
+                if 'rejected_input_ids' in item:
+                    print('input_ids:')
+                    print(item['rejected_input_ids'][:1000])
+                    print('decoded rejected_input_ids:')
+                    print(tokenizer.decode(item['rejected_input_ids'][:1000]))
+                    print('rejected_attention_mask:')
+                    print(item['rejected_attention_mask'][:1000])
+                    print('rejected_labels:')
+                    print(item['rejected_labels'][:1000])
                 print('-'*80)
                 if i >= args.debug_dataset-1:
                     break
@@ -465,7 +475,10 @@ if __name__ == '__main__':
         model=pipeline_model,
         model_parameters=parameters_to_train,
         optimizer=get_optimizer,
+        lora_model=lora_model,
     )
+    if rl_config := config.get('rl', None):
+        model_engine.configure_rl(rl_config)
 
     # TODO: I have recently realized that we are setting things to fp16/bf16, even though all the DS
     # config was not in fp16 / bf16 mode. DS being in fp16/bf16 changes things in many places, e.g.
@@ -607,8 +620,6 @@ if __name__ == '__main__':
         saver.append_eval_results(loss, save_best=False)
 
     while True:
-        gc.collect()
-        torch.cuda.empty_cache()
         metrics = model_engine.train_batch()
         train_dataloader.sync_epoch()
         if lora_config is not None:

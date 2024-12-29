@@ -205,7 +205,7 @@ class Saver:
             if is_main_process():
                 os.remove(save_quit_signal_file)
 
-        if step % self.config['save_steps'] == 0 or should_manually_save:
+        if ('save_steps' in self.config and step % self.config['save_steps'] == 0) or should_manually_save:
             self.save_model(f'step{step}')
 
         pending_save_best_loss = os.path.exists(os.path.join(self.save_root, ".pending_save_best_loss"))

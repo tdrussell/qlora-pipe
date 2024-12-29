@@ -1,0 +1,51 @@
+# Paths
+model = '/data2/models/Meta-Llama-3.1-8B-Instruct'
+output_dir = '/data/training_runs/llama3_8b_dpo_example'
+
+lora_rank = 64
+lora_alpha = 64
+lora_dropout = 0.05
+
+epochs = 2
+lr_scheduler = 'constant'
+warmup_steps = 100
+
+batch_size_tokens = 5000
+
+pipeline_stages = 1
+logging_steps = 10
+eval_steps = 100
+save_steps = 200
+checkpoint_every_n_minutes = 60
+eval_before_first_step = false
+eval_after_last_step = false
+model_weight_dtype = 'bfloat16'
+lora_weight_dtype = 'bfloat16'
+
+group_by_length = true
+activation_checkpointing = true
+
+eval_gradient_accumulation_steps = 1
+
+[rl]
+method = 'dpo'
+dpo_beta = 0.02
+
+# [quantization.bnb]
+# load_in_4bit = true
+# bnb_4bit_use_double_quant = false
+# bnb_4bit_compute_dtype = 'bfloat16'
+
+[optimizer]
+type = 'adamw_kahan'
+lr = 5e-5
+beta1 = 0.9
+beta2 = 0.99
+weight_decay = 0.1
+
+[[datasets]]
+name = 'ultrafeedback'
+dataset_type = 'axolotl'
+dataset_path = 'examples/ultrafeedback.yml'
+sequence_len = 4096
+eval_size = 0.01

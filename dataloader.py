@@ -38,6 +38,20 @@ def batch_size_tokens_after_padding(batch):
     return max(math.ceil(pair[1] / PAD_TO_MULTIPLE) * PAD_TO_MULTIPLE for pair in batch) * len(batch)
 
 
+# Merge lists a and b, such that for each contiguous piece in the result, the first half comes from
+# a and the second half from b. Used for DPO. The splitting must match how split_batch() does it.
+def combine_piecewise(a, b, pieces):
+    assert len(a) == len(b)
+    split_size = len(a) // pieces
+    a_chunks = [a[i:i+split_size] for i in range(0, len(a), split_size)]
+    b_chunks = [b[i:i+split_size] for i in range(0, len(b), split_size)]
+    result = []
+    for a_chunk, b_chunk in zip(a_chunks, b_chunks):
+        result.extend(a_chunk)
+        result.extend(b_chunk)
+    return result
+
+
 # A distributed batch sampler that supports grouping by length
 class DistributedBatchSamper(torch.utils.data.Sampler):
     def __init__(self, dataset, batch_size, num_replicas, rank, batch_size_multiplier=1, shuffle=True, group_by_length=False, seed=0, batch_size_tokens=None):
@@ -184,6 +198,17 @@ class PipelineDataLoader:
     def _create_dataloader(self):
         data_collator = DataCollatorForSeq2Seq(self.tokenizer, pad_to_multiple_of=self.pad_to_multiple_of)
         def collate_fn(examples):
+            rejected_examples = []
+            for example in examples:
+                del example['length']
+                rejected_example = {}
+                for key in list(example.keys()):
+                    if 'rejected_' in key:
+                        rejected_example[key.strip('rejected_')] = example.pop(key)
+                if rejected_example:
+                    rejected_examples.append(rejected_example)
+            if rejected_examples:
+                examples = combine_piecewise(examples, rejected_examples, self.gradient_accumulation_steps)
             batch = data_collator(examples)
             # input to pipeline is (input_ids, attention_mask, labels)
             # this needs to return (features, labels)

@@ -14,6 +14,9 @@ import yaml
 from utils import *
 
 
+NUM_PROC = min(64, os.cpu_count())
+
+
 def yield_sequences_from_token_batch(tokenizer, token_batch, sequence_len):
     need = sequence_len
     example_tokens = []
@@ -58,11 +61,10 @@ def load_raw_dataset(dataset_path, tokenizer, sequence_len, eval_size, overlap=0
         raise NotImplementedError()
     dataset.set_format(type='torch')
 
-    num_proc = min(64, os.cpu_count())
     if subsample_documents:
         dataset = dataset.shuffle(seed=13).select(list(range(int(subsample_documents*len(dataset)))))
 
-    dataset = dataset.map(lambda x: tokenizer(x['text']), batched=True, batch_size=10, remove_columns=dataset.column_names, desc='tokenizing', num_proc=num_proc)
+    dataset = dataset.map(lambda x: tokenizer(x['text']), batched=True, batch_size=10, remove_columns=dataset.column_names, desc='tokenizing', num_proc=NUM_PROC)
     # TODO: maybe do it this way instead
     #dataset = dataset.map(lambda x: {'tokens': slice_into_chunks(x['tokens'][0], sequence_len, overlap=overlap)}, batched=True, batch_size=1)
     dataset = dataset.map(lambda x: {'input_ids': list(yield_sequences_from_token_batch(tokenizer, x['input_ids'], sequence_len))}, batched=True, batch_size=None, remove_columns=dataset.column_names, desc='splitting')
@@ -114,11 +116,21 @@ def load_single_dataset(dataset_path, dataset_type, tokenizer, sequence_len, eva
         if eval_data is not None:
             eval_data = eval_data.select(range(int(len(eval_data)*subsample)))
 
-    def add_length(x): return {'length': len(x['input_ids'])}
+    def add_length(x):
+        length = len(x['input_ids'])
+        if 'rejected_input_ids' in x:
+            length = max(length, len(x['rejected_input_ids']))
+        return {'length': length}
     with zero_first(is_main_process()):
-        train_data = train_data.map(add_length, desc='adding length field')
+        train_data = train_data.map(add_length, desc='adding length field', num_proc=NUM_PROC)
         if eval_data is not None:
-            eval_data = eval_data.map(add_length, desc='adding length field')
+            eval_data = eval_data.map(add_length, desc='adding length field', num_proc=NUM_PROC)
+
+    if 'prompt_attention_mask' in train_data.column_names:
+        train_data = train_data.remove_columns('prompt_attention_mask')
+        if eval_data is not None:
+            eval_data = eval_data.remove_columns('prompt_attention_mask')
+
     if is_main_process():
         print(f'train_data size: {len(train_data)}')
         if eval_data is not None:

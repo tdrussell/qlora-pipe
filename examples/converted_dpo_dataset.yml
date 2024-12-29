@@ -1,0 +1,10 @@
+# Some DPO datasets are not in conversation format.
+# They need to be in conversation format to load them in this script. You can convert them:
+# python tools/convert_dpo_dataset_to_chat_format.py unalignment/toxic-dpo-v0.2 ~/data/toxic-dpo-v0.2-converted
+chat_template: llama3
+datasets:
+  - path: json
+    data_files:
+      - /home/anon/data/toxic-dpo-v0.2-converted/train.json
+    split: train
+    type: orpo.chat_template
