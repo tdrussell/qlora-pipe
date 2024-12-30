@@ -58,7 +58,6 @@ def load_raw_dataset(dataset_path, tokenizer, sequence_len, eval_size, overlap=0
         dataset = datasets.load_dataset('json', data_files=dataset_path)['train']
     else:
         raise NotImplementedError()
-    dataset.set_format(type='torch')
 
     if subsample_documents:
         dataset = dataset.shuffle(seed=13).select(list(range(int(subsample_documents*len(dataset)))))
@@ -68,6 +67,10 @@ def load_raw_dataset(dataset_path, tokenizer, sequence_len, eval_size, overlap=0
     #dataset = dataset.map(lambda x: {'tokens': slice_into_chunks(x['tokens'][0], sequence_len, overlap=overlap)}, batched=True, batch_size=1)
     dataset = dataset.map(lambda x: {'input_ids': list(yield_sequences_from_token_batch(tokenizer, x['input_ids'], sequence_len))}, batched=True, batch_size=None, remove_columns=dataset.column_names, desc='splitting')
     dataset = dataset.map(lambda x: {'attention_mask': torch.ones_like(x['input_ids']), 'labels': x['input_ids']}, desc='adding attention_mask and labels')
+    
+    # Must be done *AFTER* the calls to dataset.map() to avoid OOM errors for very large files!
+    dataset.set_format(type='torch')
+    
     if eval_size > 0:
         split_datasets = dataset.train_test_split(test_size=eval_size, shuffle=True, seed=42)
         train_data = split_datasets['train']
