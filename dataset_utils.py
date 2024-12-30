@@ -18,30 +18,29 @@ NUM_PROC = min(64, os.cpu_count())
 
 
 def yield_sequences_from_token_batch(tokenizer, token_batch, sequence_len):
-    need = sequence_len
-    example_tokens = []
+    sequence_tokens = [tokenizer.bos_token_id] if tokenizer.bos_token_id is not None else []
     for tokens in tqdm(token_batch):
         tokens = tokens.tolist()
-        assert tokens[-1] != tokenizer.eos_token_id, tokens[-1]
+        assert len(tokens) > 0, "empty tokens list"
+        assert tokens[-1] != tokenizer.eos_token_id, f"token list already ends with EOS: {tokens[-1]}"
         tokens.append(tokenizer.eos_token_id)
-        while len(tokens) > 0:
-            taken = tokens[:need]
-            tokens = tokens[need:]
-            need -= len(taken)
-            example_tokens.extend(taken)
-            if len(example_tokens) >= sequence_len:
-                assert len(example_tokens) == sequence_len
-                # Force each sequence to start with BOS.
-                # TODO: can we do this better? It's possible that the first token is EOS followed by BOS.
-                if tokenizer.bos_token_id is not None and example_tokens[0] != tokenizer.bos_token_id:
-                    example_tokens = [tokenizer.bos_token_id] + example_tokens[:-1]
-                yield example_tokens
-                need = sequence_len
-                example_tokens = []
+        idx = 0
+        # If present, skip the auto-generated BOS token
+        if tokenizer.bos_token_id is not None and tokens[0] == tokenizer.bos_token_id:
+            idx += 1
+        while idx < len(tokens):
+            need = sequence_len - len(sequence_tokens)
+            taken = tokens[idx:idx + need]
+            idx += len(taken)
+            sequence_tokens.extend(taken)
+            if len(sequence_tokens) >= sequence_len:
+                assert len(sequence_tokens) == sequence_len
+                yield sequence_tokens
+                sequence_tokens = [tokenizer.bos_token_id] if tokenizer.bos_token_id is not None else []
     # yield anything remaining
     # TODO: disabled until I get training working with variable length sequences
-    # if len(example_tokens) > 0:
-    #     yield example_tokens
+    # if len(sequence_tokens) > 0:
+    #     yield sequence_tokens
 
 
 def slice_into_chunks(x, sequence_len, overlap=0):
