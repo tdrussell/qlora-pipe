@@ -18,17 +18,19 @@ NUM_PROC = min(64, os.cpu_count())
 
 
 def yield_sequences_from_token_batch(tokenizer, token_batch, sequence_len):
+    # Initialize sequence_tokens with BOS token if it exists
     sequence_tokens = [tokenizer.bos_token_id] if tokenizer.bos_token_id is not None else []
     for tokens in tqdm(token_batch):
         tokens = tokens.tolist()
-        assert len(tokens) > 0, "empty tokens list"
-        assert tokens[-1] != tokenizer.eos_token_id, f"token list already ends with EOS: {tokens[-1]}"
+        assert len(tokens) > 0, "Empty tokens list"
+        assert tokens[-1] != tokenizer.eos_token_id, f"Token list already ends with EOS: {tokens[-1]}"
         tokens.append(tokenizer.eos_token_id)
         idx = 0
-        # If present, skip the auto-generated BOS token
+        # Skip the auto-generated BOS token if present
         if tokenizer.bos_token_id is not None and tokens[0] == tokenizer.bos_token_id:
             idx += 1
         while idx < len(tokens):
+            # Calculate how many tokens are needed to fill the sequence
             need = sequence_len - len(sequence_tokens)
             taken = tokens[idx:idx + need]
             idx += len(taken)
@@ -36,6 +38,7 @@ def yield_sequences_from_token_batch(tokenizer, token_batch, sequence_len):
             if len(sequence_tokens) >= sequence_len:
                 assert len(sequence_tokens) == sequence_len
                 yield sequence_tokens
+                # Reset sequence_tokens with BOS token if it exists
                 sequence_tokens = [tokenizer.bos_token_id] if tokenizer.bos_token_id is not None else []
     # yield anything remaining
     # TODO: disabled until I get training working with variable length sequences
