@@ -52,9 +52,9 @@ conda install nvidia::cuda-nvcc
 ```
 
 ## Training
-Edit the config files in the examples directory to your liking. At minimum, change the paths at the top to point to your model and desired output directory. Per-device batch size and gradient accumulation steps are specified in the Deepspeed JSON config file. Everything else is in the TOML config file. Launch the training script:
+__Start by reading through the config files in the examples directory__. There are lots of comments explaining what the various fields do. Then, make a copy and edit it however you like. At minimum, change the paths at the top to point to your model and desired output directory. Launch the training script:
 ```
-NCCL_P2P_DISABLE="1" NCCL_IB_DISABLE="1" deepspeed --num_gpus=1 train.py --deepspeed --deepspeed_config examples/ds_config.json --config examples/config.toml
+NCCL_P2P_DISABLE="1" NCCL_IB_DISABLE="1" deepspeed --num_gpus=1 train.py --deepspeed --config examples/config.toml
 ```
 RTX 4000 series needs those 2 enviroment variables set. Other GPUs may not need them.
 
@@ -94,7 +94,7 @@ You can have multiple datasets. Just add additional `[[datasets]]` entries. When
       - Using batch_size_tokens: when interleaving, you get 4 rows of A for every row of B. This is because A's rows are on average half the length of B's rows, so you need twice as many as before so that the number of tokens in each matches the 2:1 ratio you specified with the sample_weight.
 
 ## On sample packing (or the lack thereof)
-Sample packing is not currently implemented. Instead, there is the option `batch_size_tokens`. If this field is set, the batch size in the Deepspeed config file is ignored, and instead the batch size is adjusted dynamically to target a fixed number of tokens per batch, per device. This was easier to implement than sample packing, and does basically the same thing. It is also efficient: if I set batch_size_tokens to a modest 10000 and train a 7B model with the Alpaca dataset, all my 4090s hit their 350W power limit cap. Unless I'm missing something (definitely possible), it seems there is no need to support sample packing.
+Sample packing is not currently implemented. Instead, there is the option `batch_size_tokens`. If this field is set, the per-device batch size is ignored, and instead the batch size is adjusted dynamically to target a fixed number of tokens per batch, per device. This was easier to implement than sample packing, and does basically the same thing. It is also efficient: if I set batch_size_tokens to a modest 10000 and train a 7B model with the Alpaca dataset, all my 4090s hit their 350W power limit cap. Unless I'm missing something (definitely possible), it seems there is no need to support sample packing.
 
 ## Floating point precision
 There are different places you can specify the floating point dtype. `model_weight_dtype` controls the precision of the underlying model weights (for any weights not quantized), and `lora_weight_dtype` is for the lora weights. If you are using quantization, both bnb and hqq have options for the compute dtype as well.

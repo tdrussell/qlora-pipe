@@ -9,16 +9,19 @@ lora_dropout = 0.05
 epochs = 2
 lr_scheduler = 'constant'
 warmup_steps = 100
-
 batch_size_tokens = 5000
-
+micro_batch_size_per_gpu = 1
 pipeline_stages = 1
-logging_steps = 10
+gradient_accumulation_steps = 4
+gradient_clipping = 1.0
+
 eval_steps = 100
+eval_before_first_step = true
+eval_after_last_step = false
+
+logging_steps = 10
 save_steps = 200
 checkpoint_every_n_minutes = 60
-eval_before_first_step = false
-eval_after_last_step = false
 model_weight_dtype = 'bfloat16'
 lora_weight_dtype = 'bfloat16'
 

@@ -88,7 +88,8 @@ class Saver:
             torch.save(state_dict, os.path.join(save_dir, 'adapter_model.bin'))
             self.lora_config.save_pretrained(save_dir)
             shutil.copy(self.args.config, save_dir)
-            shutil.copy(self.args.deepspeed_config, save_dir)
+            if hasattr(self.args, "deepspeed_config") and self.args.deepspeed_config is not None:
+                shutil.copy(self.args.deepspeed_config, save_dir)
             shutil.rmtree(tmp_dir)
 
 
@@ -122,7 +123,8 @@ class Saver:
                     content = json.dumps(index, indent=2, sort_keys=True) + "\n"
                     f.write(content)
             shutil.copy(self.args.config, save_dir)
-            shutil.copy(self.args.deepspeed_config, save_dir)
+            if hasattr(self.args, "deepspeed_config") and self.args.deepspeed_config is not None:
+                shutil.copy(self.args.deepspeed_config, save_dir)
             additional_files_to_copy = [
                 'added_tokens.json',
                 'config.json',

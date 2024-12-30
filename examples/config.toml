@@ -18,33 +18,42 @@ lora_dropout = 0.05
 # can specify layers to adapt with LoRA if you want
 #layers_to_transform = '16:31'
 
-# for Mixtral, set the load balancing coefficient
-#load_balancing_loss_coef = 0.02
+# Training settings
 
-# Optimization configuration
 epochs = 2
 lr_scheduler = 'cosine'  # can also be 'constant'
 warmup_steps = 100
-
+# Batch size of a single forward/backward pass for one GPU.
+micro_batch_size_per_gpu = 1
+# Dynamic batch size, targeting this many tokens per batch, per device.
+# If set, completely ignores micro_batch_size_per_gpu.
+# Can be thought of as a replacement for sample packing.
+batch_size_tokens = 10000
+ # number of pipeline parallel stages, must evenly divide the number of GPUs you launch the script with
+pipeline_stages = 1
+# Number of micro-batches sent through the pipeline for each training step.
+# If pipeline_stages > 1, a higher GAS means better GPU utilization due to smaller pipeline bubbles (where GPUs aren't overlapping computation).
+gradient_accumulation_steps = 4
+# Grad norm clipping.
+gradient_clipping = 1.0
 # might be useful if resuming from a checkpoint and you want to change the LR and force it to something
 #force_constant_lr = 5e-5
-
 # hard clamp the magnitude of the LoRA weights
 #scale_weight_norms = 1.0
+# for Mixtral, set the load balancing coefficient
+#load_balancing_loss_coef = 0.02
 
-# dynamic batch size, targeting this many tokens per batch, per device
-# if set, completely ignores the batch size in the deepspeed JSON config file
-# can be thought of as a replacement for sample packing
-batch_size_tokens = 10000
+# Eval settings
 
-# Performance settings
-pipeline_stages = 1  # number of pipeline parallel stages, must evenly divide the number of GPUs you launch the script with
-logging_steps = 10  # how often to log in Tensorboard
-eval_steps = 100
-save_steps = 200
-checkpoint_every_n_minutes = 60
+eval_steps = 100  # how often to run eval
 eval_before_first_step = true  # do an eval before any training happens
 eval_after_last_step = false # do a final eval after the training completes
+
+# Performance settings
+
+logging_steps = 10  # how often to log in Tensorboard
+save_steps = 200  # how often to save the model
+checkpoint_every_n_minutes = 60  # how frequently to checkpoint training states (used for resuming training)
 # dtype to load the underlying model weights in
 model_weight_dtype = 'bfloat16'
 # dtype for the LoRA weights

@@ -26,14 +26,15 @@ def initialize(args=None,
                model=None,
                model_parameters=None,
                optimizer=None,
-               lora_model=None):
+               lora_model=None,
+               config=None):
     assert model is not None, "deepspeed.initialize requires a model"
 
     dist_backend = get_accelerator().communication_backend_name()
     dist.init_distributed(dist_backend=dist_backend)
 
-    config = args.deepspeed_config
-    assert config is not None, "DeepSpeed requires --deepspeed_config to specify configuration file"
+    if hasattr(args, "deepspeed_config") and args.deepspeed_config is not None:
+        config = args.deepspeed_config
 
     mpu = model.mpu()
     config_class = DeepSpeedConfig(config, mpu)

@@ -362,6 +362,18 @@ if __name__ == '__main__':
         config = toml.load(f)
     set_config_defaults(config)
 
+    if hasattr(args, "deepspeed_config") and args.deepspeed_config is not None:
+        # engine.initialize() will load deepspeed config from args
+        ds_config = None
+    else:
+        # The necessary ds_config fields are taken from the TOML config file.
+        ds_config = {
+            'train_micro_batch_size_per_gpu': config.get('micro_batch_size_per_gpu', 1),
+            'gradient_accumulation_steps': config.get('gradient_accumulation_steps', 1),
+            'gradient_clipping': config.get('gradient_clipping', 1.0),
+            'steps_per_print': config.get('steps_per_print', 1),
+        }
+
     resume_from_checkpoint = (
         args.resume_from_checkpoint if args.resume_from_checkpoint is not None
         else config['resume_from_checkpoint'] if 'resume_from_checkpoint' in config
@@ -416,7 +428,8 @@ if __name__ == '__main__':
         run_dir = os.path.join(config['output_dir'], datetime.now(timezone.utc).strftime('%Y%m%d_%H-%M-%S'))
         os.makedirs(run_dir, exist_ok=True)
         shutil.copy(args.config, run_dir)
-        shutil.copy(args.deepspeed_config, run_dir)
+        if hasattr(args, "deepspeed_config") and args.deepspeed_config is not None:
+            shutil.copy(args.deepspeed_config, run_dir)
     # wait for all processes then get the most recent dir (may have just been created)
     deepspeed.comm.barrier()
     run_dir = get_most_recent_run_dir(config['output_dir'])
@@ -476,6 +489,7 @@ if __name__ == '__main__':
         model_parameters=parameters_to_train,
         optimizer=get_optimizer,
         lora_model=lora_model,
+        config=ds_config,
     )
     if rl_config := config.get('rl', None):
         model_engine.configure_rl(rl_config)
