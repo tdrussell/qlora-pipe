@@ -412,11 +412,11 @@ class CustomPipeDataParallelTopology(ProcessTopology):
 
 
 class CustomPipelineModule(PipelineModule):
-    def __init__(self, layers, model=None, **kwargs):
+    def __init__(self, layers, full_fine_tune, model=None, **kwargs):
         # Assign to list to avoid registering the nn.Module
         self.model = [model]
         # Hybrid data+pipeline parallelism for LoRAs should use "column-major" layout
-        if not kwargs.get('full_fine_tune'):
+        if not full_fine_tune:
             world_size = dist.get_world_size()
             num_stages = kwargs.get('num_stages')
             if num_stages > 1 and world_size > 1 and world_size % num_stages == 0:
