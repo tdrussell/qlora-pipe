@@ -401,7 +401,7 @@ class CustomPipelineEngine(PipelineEngine):
     PipelineEngine._INSTRUCTION_MAP[ReferenceLogitsForwardPass] = _exec_reference_logits_forward_pass
 
 
-class CustomPipeDataParallelTopology(ProcessTopology):
+class ColumnMajorParallelTopology(ProcessTopology):
     """
     A topology specialisation for hybrid data+pipeline parallelism optimized for LoRA training:
     - Sends high-volume "per token" hidden states over PCIe/NVLink.
@@ -413,16 +413,17 @@ class CustomPipeDataParallelTopology(ProcessTopology):
 
 
 class CustomPipelineModule(PipelineModule):
-    def __init__(self, layers, full_fine_tune, model=None, **kwargs):
+    def __init__(self, layers, use_column_major_topology, model=None, **kwargs):
         # Assign to list to avoid registering the nn.Module
         self.model = [model]
-        # Hybrid data+pipeline parallelism for LoRAs should use "column-major" layout
-        if not full_fine_tune:
+        # Hybrid LoRA data+pipeline parallelism may want to use "column-major" layout
+        if use_column_major_topology:
             world_size = dist.get_world_size()
             num_stages = kwargs.get('num_stages')
-            if num_stages > 1 and world_size > 1 and world_size % num_stages == 0:
+            if num_stages > 1 and world_size > 1:
+                assert world_size % num_stages == 0, f"world_size ({world_size}) must be divisible by num_stages ({num_stages})"
                 num_dp = world_size // num_stages
-                kwargs['topology'] = CustomPipeDataParallelTopology(num_pp=num_stages, num_dp=num_dp)
+                kwargs['topology'] = ColumnMajorParallelTopology(num_pp=num_stages, num_dp=num_dp)
         super().__init__(layers, **kwargs)
 
     def set_dpo_reference_mode(self, dpo_reference_mode):
