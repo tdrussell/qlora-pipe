@@ -307,12 +307,14 @@ def load_pipeline_model_with_lora(config, model_type):
             activation_checkpoint_func=checkpoint_func,
             partition_method=partition_method,
             model=model,
+            full_fine_tune=full_fine_tune,
         )
     else:
         pipeline_model = engine.CustomPipelineModule(
             layers=layers,
             num_stages=config['pipeline_stages'],
-            partition_method=partition_method
+            partition_method=partition_method,
+            full_fine_tune=full_fine_tune,
         )
 
     target_modules = config['target_modules'] if 'target_modules' in config else 'all-linear'

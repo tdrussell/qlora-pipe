@@ -400,10 +400,28 @@ class CustomPipelineEngine(PipelineEngine):
     PipelineEngine._INSTRUCTION_MAP[ReferenceLogitsForwardPass] = _exec_reference_logits_forward_pass
 
 
+class CustomPipeDataParallelTopology(ProcessTopology):
+    """
+    A topology specialisation for hybrid data+pipeline parallelism optimized for LoRA training:
+    - Sends high-volume "per token" hidden states over PCIe/NVLink.
+    - Sends lower-volume "per step" LoRA gradient reductions over Ethernet/InfiniBand.
+    """
+    def __init__(self, num_pp, num_dp):
+        # Swap the axes and dims to change the rank mapping
+        super().__init__(axes=['data', 'pipe'], dims=[num_dp, num_pp])
+
+
 class CustomPipelineModule(PipelineModule):
     def __init__(self, layers, model=None, **kwargs):
         # Assign to list to avoid registering the nn.Module
         self.model = [model]
+        # Hybrid data+pipeline parallelism for LoRAs should use "column-major" layout
+        if not kwargs.get('full_fine_tune'):
+            world_size = dist.get_world_size()
+            num_stages = kwargs.get('num_stages')
+            if num_stages > 1 and world_size > 1 and world_size % num_stages == 0:
+                num_dp = world_size // num_stages
+                kwargs['topology'] = CustomPipeDataParallelTopology(num_pp=num_stages, num_dp=num_dp)
         super().__init__(layers, **kwargs)
 
     def set_dpo_reference_mode(self, dpo_reference_mode):
