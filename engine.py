@@ -14,6 +14,7 @@ from deepspeed.runtime.activation_checkpointing import checkpointing as ds_check
 from deepspeed.runtime.pipe.module import PipelineModule
 from deepspeed.runtime import utils as ds_utils
 from deepspeed.runtime.pipe.module import LayerSpec
+from deepspeed.runtime.pipe.topology import ProcessTopology
 from deepspeed.runtime.pipe.schedule import (
     PipeSchedule, OptimizerStep, ReduceGrads, ReduceTiedGrads, PipeInstruction, BufferOpInstruction, LoadMicroBatch, ForwardPass, BackwardPass,
     SendActivation, RecvActivation, SendGrad, RecvGrad, _is_even, _is_odd,
