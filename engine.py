@@ -8,7 +8,7 @@ from deepspeed.accelerator import get_accelerator
 from deepspeed import comm as dist
 from deepspeed.runtime.config import DeepSpeedConfig
 from deepspeed.runtime.pipe.engine import PipelineEngine, TRAIN_BATCH_TIMER, PIPE_SEND_OUTPUT_TIMER, PIPE_SEND_GRAD_TIMER, PIPE_RECV_INPUT_TIMER, PIPE_RECV_GRAD_TIMER, BATCH_INPUT_TIMER
-from deepspeed.runtime.pipe import schedule
+from deepspeed.runtime.pipe import schedule, p2p
 from deepspeed.runtime.utils import PartitionedTensor
 from deepspeed.runtime.activation_checkpointing import checkpointing as ds_checkpointing
 from deepspeed.runtime.pipe.module import PipelineModule
@@ -27,7 +27,8 @@ def initialize(args=None,
                model_parameters=None,
                optimizer=None,
                lora_model=None,
-               config=None):
+               config=None,
+               tokenizer=None):
     assert model is not None, "deepspeed.initialize requires a model"
 
     dist_backend = get_accelerator().communication_backend_name()
@@ -47,6 +48,7 @@ def initialize(args=None,
         config=config,
         config_class=config_class,
         lora_model=lora_model,
+        tokenizer=tokenizer,
     )
 
     return engine, engine.optimizer
@@ -62,13 +64,18 @@ class ReferenceLogitsForwardPass(BufferOpInstruction):
 
 
 class CustomPipelineEngine(PipelineEngine):
-    def __init__(self, *args, lora_model=None, **kwargs):
+    def __init__(self, *args, lora_model=None, tokenizer=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.total_steps = None
         self.etas = deque()
         self.rl_config = {}
         # Assign list to avoid registering the nn.Module
         self.lora_model = [lora_model]
+        self.tokenizer = tokenizer
+
+
+    def configure_rl(self, rl_config):
+        self.rl_config = rl_config
 
 
     def train_batch(self):
@@ -163,6 +170,24 @@ class CustomPipelineEngine(PipelineEngine):
         self.set_dataiterator(train_iterator)
 
         return agg_eval_losses
+
+
+    def sample_batch(self, prompts):
+        assert isinstance(prompts, (list, tuple))
+        self.reset_activation_shape()
+        self.module.eval()
+        self.module.set_sampling_mode(True)
+        train_iterator = self.data_iterator
+        original_micro_batches = self.micro_batches
+        self.micro_batches = len(prompts)
+
+        dist.barrier()
+        with torch.no_grad():
+            results = self._exec_sampling_schedule(prompts)
+        self.set_dataiterator(train_iterator)
+        self.micro_batches = original_micro_batches
+        self.module.set_sampling_mode(False)
+        return results
 
 
     def _aggregate_total_losses(self):
@@ -286,6 +311,7 @@ class CustomPipelineEngine(PipelineEngine):
                 self.loss = losses[0]
                 self.fwd_outputs.append([l.detach() for l in losses])
 
+
     def _exec_load_micro_batch_multiple_buffers(self, buffer_ids):
         if self.wall_clock_breakdown():
             self.timers(BATCH_INPUT_TIMER).start()
@@ -333,6 +359,7 @@ class CustomPipelineEngine(PipelineEngine):
 
         if self.wall_clock_breakdown():
             self.timers(BATCH_INPUT_TIMER).stop()
+
 
     @torch.no_grad()
     def _exec_reference_logits_forward_pass(self, buffer_id):
@@ -391,8 +418,187 @@ class CustomPipelineEngine(PipelineEngine):
         self.lora_model[0].enable_adapter_layers()
         self.module.set_dpo_reference_mode(False)
 
-    def configure_rl(self, rl_config):
-        self.rl_config = rl_config
+
+    def _exec_send_micro_batch_id(self, send_micro_batch_id):
+        assert isinstance(send_micro_batch_id, int)
+        if self.num_stages == 1:
+            return send_micro_batch_id
+        send_micro_batch_id = torch.tensor(send_micro_batch_id)
+        recv_micro_batch_id = torch.tensor(-1)
+        if _is_even(self.stage_id):
+            if not self.is_last_stage():
+                p2p.send(send_micro_batch_id, self.next_stage)
+            if not self.is_first_stage():
+                p2p.recv(recv_micro_batch_id, self.prev_stage)
+        else:
+            if not self.is_first_stage():
+                p2p.recv(recv_micro_batch_id, self.prev_stage)
+            if not self.is_last_stage():
+                p2p.send(send_micro_batch_id, self.next_stage)
+        # last stage sends to first stage
+        if self.is_first_stage():
+            p2p.recv(recv_micro_batch_id, self.num_stages-1)
+        if self.is_last_stage():
+            p2p.send(send_micro_batch_id, 0)
+        return recv_micro_batch_id.item()
+
+
+    def _exec_load_micro_batch_for_sampling(self, buffer_id, inputs):
+        loaded = (
+            inputs['input_ids'],
+            inputs['attention_mask'],
+            torch.tensor([0]),  # labels must be provided, so use a dummy
+        )
+        loaded = tuple(x.clone().detach().to(self.device) for x in loaded)
+        self.pipe_buffers['inputs'][buffer_id] = loaded
+
+
+    @torch.no_grad()
+    def _exec_sampling_forward_pass(self, buffer_id):
+        if isinstance(self.pipe_buffers['inputs'][buffer_id], tuple):
+            inputs = tuple(t.clone() for t in self.pipe_buffers['inputs'][buffer_id])
+        else:
+            inputs = self.pipe_buffers['inputs'][buffer_id].clone()
+
+        # collect the partitioned input from the previous stage
+        if self.is_pipe_partitioned and not self.is_first_stage():
+            if self.pipe_partition_input_meta_cache is None:
+                self.pipe_partition_input_meta_cache = inputs[0].to('cpu')
+            part_input = PartitionedTensor.from_meta(meta=self.pipe_partition_input_meta_cache,
+                                                     local_part=inputs[1],
+                                                     group=self.grid.get_slice_parallel_group())
+
+            inputs = (part_input.full(), *inputs[2:])
+            inputs[0].requires_grad = True
+            # skip mask
+            #inputs[1].requires_grad = True
+            part_input = None
+            inputs = inputs[0] if len(inputs) == 1 else inputs
+            self.pipe_buffers['inputs'][buffer_id] = inputs
+
+        # inputs has no gradient because it is from a cloned tensor
+        outputs = super(PipelineEngine, self).forward(inputs)
+
+        # Reset activation checkpointing buffers.
+        # Need to call this between evaluation iterations
+        if not self.module.training:
+            ds_checkpointing.reset()
+
+        # Partition the outputs if we are not the last stage
+        if self.is_pipe_partitioned and not self.is_last_stage():
+            if isinstance(outputs, tuple):
+                first_output = outputs[0]
+                # TODO: Improve pipe partitioning to pass multiple tensors that require grads
+                assert all([torch.is_tensor(elt) and elt.requires_grad is False for elt in outputs[1:]])
+                outputs_tail = outputs[1:]
+            elif torch.is_tensor(outputs):
+                first_output = outputs
+                outputs_tail = []
+            else:
+                raise ValueError("expecting a tensor or a tuple of tensors")
+            part = PartitionedTensor(tensor=first_output, group=self.grid.get_slice_parallel_group())
+            # Clear the large output data, but save the computation graph
+            first_output.data = torch.zeros(1, device=first_output.data.device)
+            self.pipe_buffers['output_tensors'][buffer_id] = first_output
+            # Inject the partitioned tensor into the output before sending
+            outputs = (part.to_meta(), part.data(), *outputs_tail)
+            part = None
+
+        self.pipe_buffers['outputs'][buffer_id] = outputs
+
+
+    def _sample_from_logits(self, buffer_id):
+        logits = self.pipe_buffers['outputs'][buffer_id]
+        input_ids = torch.argmax(logits, dim=-1)
+        return input_ids
+
+
+    def _valid_stage(self, stage_id):
+        return 0 <= stage_id < self.num_stages
+
+
+    def _valid_micro_batch(self, micro_batch_id):
+        return 0 <= micro_batch_id < self.micro_batches
+
+
+    def _exec_sampling_schedule(self, prompts):
+        # Reserve and reset buffers.
+        self._reserve_pipe_buffers(2)
+        self.fwd_outputs = []
+
+        if self.is_first_stage():
+            queue = deque()
+            all_input_ids = [None]*len(prompts)
+            all_attention_masks = [None]*len(prompts)
+            for i, prompt in enumerate(prompts):
+                # Tokenizer returns dict with 'input_ids', 'attention_mask' keys.
+                # Tensors have batch dimension because we pass list of prompts.
+                inputs = self.tokenizer([prompt], return_tensors='pt')
+                all_input_ids[i] = inputs['input_ids']
+                all_attention_masks[i] = inputs['attention_mask']
+                queue.append((i, inputs))
+
+        step_id = 0
+        prev_micro_batch_id = -1
+        done = False
+        while not done:
+            micro_batch_id = -1
+            # Alternate send/recv buffers
+            if _is_even(self.stage_id):
+                recv_buf = step_id % 2
+                send_buf = (step_id + 1) % 2
+            else:
+                recv_buf = (step_id + 1) % 2
+                send_buf = step_id % 2
+
+            # Send prev_micro_batch_id to next stage. Last stage wraps around and sends to first stage.
+            micro_batch_id = self._exec_send_micro_batch_id(prev_micro_batch_id)
+
+            # If last stage did a forward pass, send the sampled input_ids to the first stage.
+            if self.is_first_stage() and self._valid_micro_batch(micro_batch_id):
+                if self.num_stages > 1:
+                    input_ids = torch.tensor([[-1]])  # TODO: batch_size > 1
+                    p2p.recv(input_ids, self.num_stages-1)
+                all_input_ids[micro_batch_id] = torch.cat([all_input_ids[micro_batch_id], input_ids.to('cpu')], dim=-1)
+                attention_mask = torch.cat([all_attention_masks[micro_batch_id], torch.ones_like(input_ids, device='cpu')], dim=-1)
+                all_attention_masks[micro_batch_id] = attention_mask
+                queue.append((micro_batch_id, {'input_ids': input_ids, 'attention_mask': attention_mask}))
+            if self.is_last_stage() and self._valid_micro_batch(prev_micro_batch_id) and self.num_stages > 1:
+                p2p.send(input_ids, 0)
+
+            if self.is_first_stage():
+                if len(queue) > 0:
+                    micro_batch_id, inputs = queue.popleft()
+                    self._exec_load_micro_batch_for_sampling(recv_buf, inputs)
+
+            if _is_even(self.stage_id):
+                if self._valid_stage(self.next_stage):
+                    if self._valid_micro_batch(prev_micro_batch_id):
+                        self._exec_send_activations(send_buf)
+                if self._valid_stage(self.prev_stage):
+                    if self._valid_micro_batch(micro_batch_id):
+                        self._exec_recv_activations(recv_buf)
+            else:
+                if self._valid_stage(self.prev_stage):
+                    if self._valid_micro_batch(micro_batch_id):
+                        self._exec_recv_activations(recv_buf)
+                if self._valid_stage(self.next_stage):
+                    if self._valid_micro_batch(prev_micro_batch_id):
+                        self._exec_send_activations(send_buf)
+
+            if self._valid_micro_batch(micro_batch_id):
+                self._exec_sampling_forward_pass(recv_buf)
+                if self.is_last_stage():
+                    input_ids = self._sample_from_logits(recv_buf)
+
+            prev_micro_batch_id = micro_batch_id
+            step_id += 1
+            # TODO: halting condition
+            if step_id >= 10:
+                done = True
+
+        return [self.tokenizer.batch_decode(input_ids) for input_ids in all_input_ids]
+
 
     # make our forward pass method apply
     PipelineEngine._INSTRUCTION_MAP[schedule.ForwardPass] = _exec_forward_pass
@@ -408,6 +614,9 @@ class CustomPipelineModule(PipelineModule):
 
     def set_dpo_reference_mode(self, dpo_reference_mode):
         self.model[0].set_dpo_reference_mode(dpo_reference_mode)
+
+    def set_sampling_mode(self, sampling_mode):
+        self.model[0].set_sampling_mode(sampling_mode)
 
     def _partition_layers(self, method='uniform'):
         num_stages = self._topo.get_dim('pipe')

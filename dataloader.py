@@ -201,6 +201,8 @@ class PipelineDataLoader:
             rejected_examples = []
             for example in examples:
                 del example['length']
+                if 'token_type_ids' in example:
+                    del example['token_type_ids']
                 rejected_example = {}
                 for key in list(example.keys()):
                     if 'rejected_' in key:

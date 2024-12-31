@@ -1,213 +1,19 @@
 import os
-import math
 from inspect import signature
 
-import torch
 from torch import nn
-import torch.nn.functional as F
 import transformers
 from deepspeed.accelerator import get_accelerator
 from transformers.integrations import get_keys_to_not_convert
-from deepspeed.runtime.pipe import module as ds_pipe_module
 import bitsandbytes as bnb
 import accelerate
 from hqq.core import quantize as hqq_quantize
 
 from utils import is_main_process
-from kernels.cross_entropy_loss import Fast_CrossEntropyLoss
 import hqq_utils
 
 
-def move_data_to_device(module, device):
-    # handle lora
-    if hasattr(module, 'base_layer'):
-        module = module.base_layer
-    # handle HQQ
-    if hasattr(module, 'W_q'):
-        orig_data = module.W_q.data
-        module.W_q.data = orig_data.to(device, non_blocking=True)
-    else:
-        orig_data = module.weight.data
-        module.weight.data = orig_data.to(device, non_blocking=True)
-    return orig_data
-
-
-def set_data(module, data):
-    # handle lora
-    if hasattr(module, 'base_layer'):
-        module = module.base_layer
-    # handle HQQ
-    if hasattr(module, 'W_q'):
-        module.W_q.data = data
-    else:
-        module.weight.data = data
-
-
-def entropy_fn(logits):
-    result = []
-    # There is a very wide range of chuck sizes that cause no increase in memory reported by
-    # nvidia-smi (Torch re-using blocks of memory?). If you try to compute it as one tensor,
-    # memory usage is huge. Chuck size of 128 seems good enough for now.
-    for logits_chuck in torch.split(logits, 128):
-        result.append(torch.distributions.Categorical(logits=logits_chuck).entropy())
-    return torch.cat(result).float()
-
-
-def top_k_accuracy(logits, labels, k_list, ignore_index=-100):
-    keep = (labels != ignore_index)
-    labels = labels[keep].view(-1, 1)
-    max_k = max(k_list)
-    _, top_k_predictions = torch.topk(logits, max_k, dim=-1, sorted=True)
-    top_k_predictions = top_k_predictions[keep]
-    accuracies = []
-    for k in k_list:
-        accuracies.append(torch.any(top_k_predictions[:, :k] == labels, dim=-1).to(torch.float32).mean())
-    return accuracies
-
-
-class LayerSpec(ds_pipe_module.LayerSpec):
-    def __init__(self, typename, *module_args, **module_kwargs):
-        super().__init__(typename, *module_args, **module_kwargs)
-
-    def build(self):
-        self.module_kwargs.pop('_estimated_size', None)
-        return self.typename(*self.module_args, **self.module_kwargs)
-
-    @property
-    def estimated_size(self):
-        return self.module_kwargs.get('_estimated_size', 1)
-
-
-# TODO: consider using Liger-Kernel fused loss implementations. The inputs are already set up to support this.
-# Would save VRAM, but some metrics could no longer be computed (e.g. entropy, accuracies).
-class OutputLayer(nn.Module):
-    def __init__(
-            self,
-            pipeline_model,
-            loader_util,
-            lm_head,
-            logit_scale=1.0,
-            loss_type='cross_entropy_loss',
-            focal_loss_gamma=0,
-            tie_weights=None,
-            logit_softcapping=None,
-        ):
-        super().__init__()
-        # Assign list to prevent registering the nn.Module
-        self.pipeline_model = [pipeline_model]
-        # Unlike the other wrapper classes, this is called lm_head and not orig. Because this is directly a
-        # nn.Linear layer, it needs to keep the same attribute name so quantization knows not to quantize it.
-        self.lm_head = lm_head
-        self.logit_scale = logit_scale
-        self.loss_type = loss_type.lower()
-        self.focal_loss_gamma = focal_loss_gamma
-        if tie_weights:
-            self.lm_head.weight.original_name = tie_weights
-        self.logit_softcapping = logit_softcapping
-        loader_util.load_state_dict_into_module(self)
-
-        if self.loss_type == 'cross_entropy_loss' and self.focal_loss_gamma != 0:
-            raise ValueError("focal_loss_gamma can't be used with 'cross_entropy_loss' function")
-
-    def forward(self, inputs):
-        hidden_states, labels = inputs
-        labels = labels.to(hidden_states.device)
-        if self.logit_scale != 1.0:
-            hidden_states = hidden_states * self.logit_scale
-        logits = self.lm_head(hidden_states)
-        if self.logit_softcapping is not None and self.logit_softcapping > 0:
-            logits = logits / self.logit_softcapping
-            logits = torch.tanh(logits)
-            logits = logits * self.logit_softcapping
-
-        extra_ignored_labels = torch.full((labels.shape[0], 1), -100, device=logits.device)
-        labels = torch.hstack((labels[..., 1:], extra_ignored_labels))
-        # Flatten the tokens
-        vocab_size = logits.size(-1)
-        flat_logits = logits.view(-1, vocab_size)
-        flat_labels = labels.view(-1)
-        flat_loss_mask = (flat_labels >= 0)
-
-        cross_entropy_loss = Fast_CrossEntropyLoss.apply(flat_logits, flat_labels)
-
-        loss = None
-        if self.loss_type == 'cross_entropy_loss':
-            cross_entropy_loss = cross_entropy_loss[flat_loss_mask]
-            loss_unreduced = cross_entropy_loss
-        elif self.loss_type == 'focal_loss':
-            cross_entropy_loss = cross_entropy_loss[flat_loss_mask]
-            # See https://arxiv.org/abs/1708.02002 (Section 3)
-            p = torch.exp(-cross_entropy_loss)
-            loss_unreduced = (1-p)**self.focal_loss_gamma * cross_entropy_loss
-        elif self.loss_type == 'focal_loss_star':
-            cross_entropy_loss = cross_entropy_loss[flat_loss_mask]
-            # See https://arxiv.org/abs/1708.02002 (Appendix A/B)
-            # NOTE: The use of Beta makes no sense for the multinomial case as it's invariant to translation
-            loss_unreduced = Fast_CrossEntropyLoss.apply(flat_logits, flat_labels, self.focal_loss_gamma)
-            loss_unreduced = loss_unreduced[flat_loss_mask]
-            loss_unreduced = loss_unreduced / self.focal_loss_gamma
-        elif self.loss_type == 'inverse_focal_loss':
-            cross_entropy_loss = cross_entropy_loss[flat_loss_mask]
-            # See "Rethinking Calibration of Deep Neural Networks: Do Not Be Afraid of Overconfidence" (Section 5.2)
-            # NOTE: The alternative of p^gamma (instead of (1+p)^gamma) might be useful for gradient ascent...
-            p = torch.exp(-cross_entropy_loss)
-            loss_unreduced = (1+p)**self.focal_loss_gamma * cross_entropy_loss
-        elif self.loss_type == 'exponentiated_cross_entropy_loss':
-            cross_entropy_loss = cross_entropy_loss[flat_loss_mask]
-            # See "Gradient as a Foundation for Building a Loss Function" (Section III.B)
-            # NOTE: This is a generalisation of their "Quadratic Cross-Entropy" loss (QCE: gamma=2, CE: gamma=1, etc).
-            loss_unreduced = cross_entropy_loss**self.focal_loss_gamma / self.focal_loss_gamma
-        elif self.loss_type == 'dpo':
-            rl_config = self.pipeline_model[0].train_config['rl']
-            cross_entropy_loss = cross_entropy_loss.view_as(labels)  # unflatten
-            loss_mask = (labels >= 0)
-            logps = -(cross_entropy_loss * loss_mask).sum(-1)
-            half = cross_entropy_loss.size(0) // 2
-            chosen_logps = logps[:half]
-            rejected_logps = logps[half:]
-
-            if self.pipeline_model[0].dpo_reference_mode:
-                self.reference_chosen_logps = chosen_logps.detach()
-                self.reference_rejected_logps = rejected_logps.detach()
-                return torch.tensor(0., device=logits.device)
-
-            # log the language modeling loss metrics on the chosen completion
-            cross_entropy_loss = cross_entropy_loss[:half].flatten()[loss_mask[:half].flatten()]
-            loss_unreduced = cross_entropy_loss
-            flat_logits = logits[:half].view(-1, vocab_size)
-            flat_labels = labels[:half].view(-1)
-            flat_loss_mask = (flat_labels >= 0)
-
-            policy_chosen_logps = chosen_logps
-            policy_rejected_logps = rejected_logps
-            pi_logratios = policy_chosen_logps - policy_rejected_logps
-            ref_logratios = self.reference_chosen_logps - self.reference_rejected_logps
-            del self.reference_chosen_logps
-            del self.reference_rejected_logps
-            dpo_logits = pi_logratios - ref_logratios
-            loss = -F.logsigmoid(rl_config['dpo_beta'] * dpo_logits).mean()
-        else:
-            raise NotImplementedError(self.loss_type)
-
-        with torch.no_grad():
-            log_vocab_size = math.log(logits.size(-1))
-            entropy = entropy_fn(flat_logits)[flat_loss_mask]
-            # Compute normalised entropy so we can compare between models with different vocab sizes
-            normalised_entropy = entropy / log_vocab_size
-            # Compute the (negative) log-likelihood using the original *UNADJUSTED* Cross-Entropy loss.
-            log_likelihood = cross_entropy_loss.mean()
-            # Compute McFadden's Pseudo-R² metric using log(vocab_size) as the null log-likelihood.
-            mcfaddens_pseudo_r2 = 1 - (log_likelihood / log_vocab_size)
-            accuracies = top_k_accuracy(flat_logits, flat_labels, k_list=[1, 5, 20])
-        if loss is None:
-            # Normal language modeling loss types (e.g. not DPO)
-            loss = loss_unreduced.mean()
-        loss_unreduced = loss_unreduced.detach()
-        return loss, loss_unreduced, entropy, normalised_entropy, log_likelihood, mcfaddens_pseudo_r2, *accuracies
-
-
 class PipelineModel(nn.Module):
-
     def __init__(self, config, quantization_config, model_config):
         if config['full_fine_tune'] and model_config.tie_word_embeddings:
             raise NotImplementedError('FFT is not supported for models with tied embeddings')
@@ -221,6 +27,8 @@ class PipelineModel(nn.Module):
         if self.focal_loss_gamma > 0 and is_main_process():
             print(f'Optimizing using \'{self.loss_type}\' with gamma={self.focal_loss_gamma}')
         self.dpo_reference_mode = False
+        self.sampling_mode = False
+        self.cache = None
 
         for name, p in self.named_parameters():
             p.original_name = name
@@ -231,6 +39,12 @@ class PipelineModel(nn.Module):
 
     def set_dpo_reference_mode(self, dpo_reference_mode):
         self.dpo_reference_mode = dpo_reference_mode
+
+    def set_sampling_mode(self, sampling_mode):
+        self.sampling_mode = sampling_mode
+        if sampling_mode:
+            # Reset cache when sampling mode is enabled
+            self.cache = transformers.DynamicCache()
 
 
 def _partial_module_name_match(full_name, list_to_match):
@@ -353,7 +167,6 @@ def _recursively_replace_with_quantized_linear(
 
 
 class LoaderUtil:
-
     def __init__(self, model_path, quantization_config, modules_to_not_quantize):
         self.model_path = model_path
         self.quantization_config = quantization_config

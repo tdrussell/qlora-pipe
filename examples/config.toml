@@ -28,7 +28,7 @@ micro_batch_size_per_gpu = 1
 # Dynamic batch size, targeting this many tokens per batch, per device.
 # If set, completely ignores micro_batch_size_per_gpu.
 # Can be thought of as a replacement for sample packing.
-batch_size_tokens = 10000
+batch_size_tokens = 5000
  # number of pipeline parallel stages, must evenly divide the number of GPUs you launch the script with
 pipeline_stages = 1
 # Number of micro-batches sent through the pipeline for each training step.

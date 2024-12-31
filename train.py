@@ -7,7 +7,6 @@ import time
 import itertools
 from contextlib import contextmanager
 import json
-import gc
 
 import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -25,8 +24,7 @@ import dataloader
 from saver import Saver
 from utils import is_main_process, DTYPE_MAP
 import engine
-import llama_pipe
-import mixtral_pipe
+import models
 import unsloth_utils
 import hqq_utils
 
@@ -232,7 +230,7 @@ def one_at_a_time():
         deepspeed.comm.barrier()
 
 
-def load_pipeline_model_with_lora(config, model_type):
+def load_pipeline_model_with_lora(config, model_type, dynamic_shape=False):
     full_fine_tune = config['full_fine_tune']
 
     if config.get('quantization', None):
@@ -264,19 +262,19 @@ def load_pipeline_model_with_lora(config, model_type):
         quantization_config = None
 
     if model_type == 'llama':
-        model = llama_pipe.LlamaForCausalLMPipe(config, quantization_config=quantization_config)
+        model = models.LlamaForCausalLMPipe(config, quantization_config=quantization_config)
     elif model_type == 'mixtral':
-        model = mixtral_pipe.MixtralForCausalLMPipe(config, quantization_config=quantization_config)
+        model = models.MixtralForCausalLMPipe(config, quantization_config=quantization_config)
     elif model_type == 'qwen2':
-        model = llama_pipe.Qwen2ForCausalLMPipe(config, quantization_config=quantization_config)
+        model = models.Qwen2ForCausalLMPipe(config, quantization_config=quantization_config)
     elif model_type == 'cohere':
-        model = llama_pipe.CohereForCausalLMPipe(config, quantization_config=quantization_config)
+        model = models.CohereForCausalLMPipe(config, quantization_config=quantization_config)
     elif model_type == 'phi3':
-        model = llama_pipe.Phi3ForCausalLMPipe(config, quantization_config=quantization_config)
+        model = models.Phi3ForCausalLMPipe(config, quantization_config=quantization_config)
     elif model_type == 'gemma2':
-        model = llama_pipe.Gemma2ForCausalLMPipe(config, quantization_config=quantization_config)
+        model = models.Gemma2ForCausalLMPipe(config, quantization_config=quantization_config)
     elif model_type == 'mistral':
-        model = llama_pipe.MistralForCausalLMPipe(config, quantization_config=quantization_config)
+        model = models.MistralForCausalLMPipe(config, quantization_config=quantization_config)
     else:
         raise NotImplementedError()
 
@@ -307,6 +305,7 @@ def load_pipeline_model_with_lora(config, model_type):
             activation_checkpoint_func=checkpoint_func,
             partition_method=partition_method,
             model=model,
+            dynamic_shape=dynamic_shape,
         )
     else:
         pipeline_model = engine.CustomPipelineModule(
@@ -386,7 +385,9 @@ if __name__ == '__main__':
         model_config = json.load(f)
         model_type = model_config.get('model_type', 'llama')
 
+    # Pad on left to support training techniques that involve sampling from the model.
     tokenizer = transformers.AutoTokenizer.from_pretrained(config['model'], local_files_only=True)
+    #tokenizer = transformers.AutoTokenizer.from_pretrained(config['model'], local_files_only=True, model_max_length=int(1e30), padding_side='left')
     # TODO: do we want to do this with cohere models? By default the EOS token is <|END_OF_TURN_TOKEN|>
     # if model_type == 'cohere':
     #     tokenizer.eos_token = '<EOS_TOKEN>'
@@ -500,7 +501,7 @@ if __name__ == '__main__':
     # is different, etc. I need to really look through all the implications of this. This change is so
     # that we keep the normal optimizer, but the communication dtype is changed so that we don't
     # unnecessarily cast grads to fp32.
-    weight_dtype = DTYPE_MAP[config.get('lora_weight_dtype')]
+    weight_dtype = DTYPE_MAP[config.get('lora_weight_dtype', config.get('model_weight_dtype', 'float32'))]
     model_engine.communication_data_type = weight_dtype
 
     # TODO: the main DeepSpeedEngine forces all parameters to the GPU, and also does things like
@@ -510,8 +511,8 @@ if __name__ == '__main__':
     if config.get('offload_mlp_to_cpu', False):
         assert config['activation_checkpointing']  # MLP offloading only works with activation checkpointing
         for module in pipeline_model.modules():
-            if hasattr(module, 'offload_mlp_to_cpu'):
-                module.offload_mlp_to_cpu()
+            if hasattr(module, 'move_mlp_to_cpu'):
+                module.move_mlp_to_cpu()
         torch.cuda.empty_cache()
 
     train_dataloader = dataloader.PipelineDataLoader(
