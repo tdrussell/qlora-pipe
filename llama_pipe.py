@@ -296,6 +296,7 @@ class CohereForCausalLMPipe(PipelineModel, transformers.CohereForCausalLM):
                 loss_type=self.loss_type,
                 focal_loss_gamma=self.focal_loss_gamma,
                 tie_weights='model.embed_tokens.weight' if self.config.tie_word_embeddings else None,
+                _estimated_size=embedding_relative_size,
             )
         )
         return result
@@ -398,6 +399,7 @@ class Gemma2ForCausalLMPipe(PipelineModel, transformers.Gemma2ForCausalLM):
                 focal_loss_gamma=self.focal_loss_gamma,
                 tie_weights='model.embed_tokens.weight' if self.config.tie_word_embeddings else None,
                 logit_softcapping=self.config.final_logit_softcapping,
+                _estimated_size=embedding_relative_size,
             )
         )
         return result
