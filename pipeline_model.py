@@ -1,5 +1,6 @@
 import os
 from inspect import signature
+from collections import defaultdict
 
 from torch import nn
 import transformers
@@ -42,9 +43,11 @@ class PipelineModel(nn.Module):
 
     def set_sampling_mode(self, sampling_mode):
         self.sampling_mode = sampling_mode
-        if sampling_mode:
-            # Reset cache when sampling mode is enabled
-            self.cache = transformers.DynamicCache()
+        # Reset cache when sampling mode is modified. This ensures it's initialized and also clears memory at the end.
+        self.cache_dict = defaultdict(transformers.DynamicCache)
+
+    def set_cache(self, micro_batch_id):
+        self.cache = self.cache_dict[micro_batch_id]
 
 
 def _partial_module_name_match(full_name, list_to_match):

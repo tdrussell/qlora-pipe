@@ -12,11 +12,16 @@ import engine
 from utils import DTYPE_MAP
 
 
-PROMPT = '''<|start_header_id|>user<|end_header_id|>
+PROMPT_FORMAT = '''<|start_header_id|>user<|end_header_id|>
 
-Where is Popeye Village located?<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+{}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
 
 '''
+
+PROMPTS = [
+    "Where is Popeye Village located?",
+    "What is the name of Sweden in Swedish?",
+]
 
 
 parser = argparse.ArgumentParser()
@@ -78,6 +83,8 @@ if __name__ == '__main__':
     weight_dtype = DTYPE_MAP[config.get('lora_weight_dtype', config.get('model_weight_dtype', 'float32'))]
     model_engine.communication_data_type = weight_dtype
 
-    for text in model_engine.sample_batch([PROMPT]):
+    prompts = [PROMPT_FORMAT.format(prompt) for prompt in PROMPTS]
+    #prompts = [[PROMPT_FORMAT.format(prompt) for prompt in PROMPTS]]
+    for text in model_engine.sample_batch(prompts):
         print(text)
         print('-'*80)

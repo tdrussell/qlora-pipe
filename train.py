@@ -386,8 +386,7 @@ if __name__ == '__main__':
         model_type = model_config.get('model_type', 'llama')
 
     # Pad on left to support training techniques that involve sampling from the model.
-    tokenizer = transformers.AutoTokenizer.from_pretrained(config['model'], local_files_only=True)
-    #tokenizer = transformers.AutoTokenizer.from_pretrained(config['model'], local_files_only=True, model_max_length=int(1e30), padding_side='left')
+    tokenizer = transformers.AutoTokenizer.from_pretrained(config['model'], local_files_only=True, model_max_length=int(1e30), padding_side='left')
     # TODO: do we want to do this with cohere models? By default the EOS token is <|END_OF_TURN_TOKEN|>
     # if model_type == 'cohere':
     #     tokenizer.eos_token = '<EOS_TOKEN>'

@@ -278,7 +278,10 @@ class InputLayer(nn.Module):
         cache_position = None
         use_cache = self.model.sampling_mode
 
-        input_ids, attention_mask, labels = inputs
+        input_ids, attention_mask, labels = inputs[:3]
+        if self.model.sampling_mode:
+            micro_batch_id = inputs[3].item()
+            self.model.set_cache(micro_batch_id)
         device = input_ids.device
         if self.embedding_on_cpu:
             self.embed_tokens.to('cpu')

@@ -72,6 +72,16 @@ class CustomPipelineEngine(PipelineEngine):
         # Assign list to avoid registering the nn.Module
         self.lora_model = [lora_model]
         self.tokenizer = tokenizer
+        eos_token_ids = set()
+        if self.tokenizer.eos_token_id is not None:
+            eos_token_ids.add(self.tokenizer.eos_token_id)
+        model_config = self.module.model.config
+        if model_config.eos_token_id:
+            model_eos_token_ids = model_config.eos_token_id
+            if isinstance(model_eos_token_ids, int):
+                model_eos_token_ids = [model_eos_token_ids]
+            eos_token_ids.update(model_eos_token_ids)
+        self.eos_token_ids = eos_token_ids
 
 
     def configure_rl(self, rl_config):
@@ -172,7 +182,7 @@ class CustomPipelineEngine(PipelineEngine):
         return agg_eval_losses
 
 
-    def sample_batch(self, prompts):
+    def sample_batch(self, prompts, max_new_tokens=1e9):
         assert isinstance(prompts, (list, tuple))
         self.reset_activation_shape()
         self.module.eval()
@@ -180,14 +190,25 @@ class CustomPipelineEngine(PipelineEngine):
         train_iterator = self.data_iterator
         original_micro_batches = self.micro_batches
         self.micro_batches = len(prompts)
-
         dist.barrier()
+
+        if self.is_first_stage():
+            # Tokenizer returns dict with 'input_ids', 'attention_mask' keys.
+            # Tensors have batch dimension because we pass list of prompts.
+            examples = []
+            for prompt in prompts:
+                if not isinstance(prompt, (list, tuple)):
+                    prompt = [prompt]
+                examples.append(self.tokenizer(prompt, return_tensors='pt', padding=True))
+        else:
+            examples = None
         with torch.no_grad():
-            results = self._exec_sampling_schedule(prompts)
+            examples = self._exec_sampling_schedule(examples, max_new_tokens=max_new_tokens)
+        text = [self.tokenizer.batch_decode(example['input_ids']) for example in examples]
         self.set_dataiterator(train_iterator)
         self.micro_batches = original_micro_batches
         self.module.set_sampling_mode(False)
-        return results
+        return text
 
 
     def _aggregate_total_losses(self):
@@ -448,6 +469,7 @@ class CustomPipelineEngine(PipelineEngine):
             inputs['input_ids'],
             inputs['attention_mask'],
             torch.tensor([0]),  # labels must be provided, so use a dummy
+            inputs['micro_batch_id'],
         )
         loaded = tuple(x.clone().detach().to(self.device) for x in loaded)
         self.pipe_buffers['inputs'][buffer_id] = loaded
@@ -521,27 +543,30 @@ class CustomPipelineEngine(PipelineEngine):
         return 0 <= micro_batch_id < self.micro_batches
 
 
-    def _exec_sampling_schedule(self, prompts):
+    def _exec_sampling_schedule(self, examples, max_new_tokens=1e9):
+        assert isinstance(examples, list) and len(examples) > 0
         # Reserve and reset buffers.
         self._reserve_pipe_buffers(2)
         self.fwd_outputs = []
+        eos_token_ids = torch.tensor(list(self.eos_token_ids))
+        for example in examples:
+            example['done'] = torch.tensor([False]*example['input_ids'].size(0))
+            example['num_new_tokens'] = 0
+        num_batches_done = 0
+        num_batches = len(examples)
 
         if self.is_first_stage():
             queue = deque()
-            all_input_ids = [None]*len(prompts)
-            all_attention_masks = [None]*len(prompts)
-            for i, prompt in enumerate(prompts):
-                # Tokenizer returns dict with 'input_ids', 'attention_mask' keys.
-                # Tensors have batch dimension because we pass list of prompts.
-                inputs = self.tokenizer([prompt], return_tensors='pt')
-                all_input_ids[i] = inputs['input_ids']
-                all_attention_masks[i] = inputs['attention_mask']
-                queue.append((i, inputs))
+            for i, example in enumerate(examples):
+                queue.append((i, {
+                    'input_ids': example['input_ids'],
+                    'attention_mask': example['attention_mask'],
+                    'micro_batch_id': torch.tensor(i),
+                }))
 
         step_id = 0
         prev_micro_batch_id = -1
-        done = False
-        while not done:
+        while True:
             micro_batch_id = -1
             # Alternate send/recv buffers
             if _is_even(self.stage_id):
@@ -553,16 +578,36 @@ class CustomPipelineEngine(PipelineEngine):
 
             # Send prev_micro_batch_id to next stage. Last stage wraps around and sends to first stage.
             micro_batch_id = self._exec_send_micro_batch_id(prev_micro_batch_id)
+            batch_size = examples[micro_batch_id]['input_ids'].size(0)
 
             # If last stage did a forward pass, send the sampled input_ids to the first stage.
             if self.is_first_stage() and self._valid_micro_batch(micro_batch_id):
                 if self.num_stages > 1:
-                    input_ids = torch.tensor([[-1]])  # TODO: batch_size > 1
+                    input_ids = torch.tensor([[-1]*batch_size])
                     p2p.recv(input_ids, self.num_stages-1)
-                all_input_ids[micro_batch_id] = torch.cat([all_input_ids[micro_batch_id], input_ids.to('cpu')], dim=-1)
-                attention_mask = torch.cat([all_attention_masks[micro_batch_id], torch.ones_like(input_ids, device='cpu')], dim=-1)
-                all_attention_masks[micro_batch_id] = attention_mask
-                queue.append((micro_batch_id, {'input_ids': input_ids, 'attention_mask': attention_mask}))
+                assert input_ids.size(-1) == 1
+                input_ids = input_ids.to('cpu')
+                prev_done = examples[micro_batch_id]['done']
+                # Determine which items in the batch are done generating.
+                done = prev_done | (input_ids == eos_token_ids).any(-1)
+                examples[micro_batch_id]['done'] = done
+                batch_done = done.all().item()
+                # Output pad token and 0 attention mask for items in the batch that are already done.
+                prev_done_reshaped = prev_done.unsqueeze(-1)
+                input_ids = torch.where(prev_done_reshaped, self.tokenizer.pad_token_id, input_ids)
+                attention_mask_extension = torch.where(prev_done_reshaped, 0, 1)
+                input_ids = torch.cat([examples[micro_batch_id]['input_ids'], input_ids], dim=-1)
+                examples[micro_batch_id]['input_ids'] = input_ids
+                attention_mask = torch.cat([examples[micro_batch_id]['attention_mask'], attention_mask_extension], dim=-1)
+                examples[micro_batch_id]['attention_mask'] = attention_mask
+                examples[micro_batch_id]['num_new_tokens'] += 1
+                if examples[micro_batch_id]['num_new_tokens'] >= max_new_tokens:
+                    break
+                if batch_done:
+                    num_batches_done += 1
+                else:
+                    # Model needs full attention mask, but only most recent sampled input_id.
+                    queue.append((micro_batch_id, {'input_ids': input_ids[..., -1:], 'attention_mask': attention_mask, 'micro_batch_id': torch.tensor(micro_batch_id)}))
             if self.is_last_stage() and self._valid_micro_batch(prev_micro_batch_id) and self.num_stages > 1:
                 p2p.send(input_ids, 0)
 
@@ -593,11 +638,13 @@ class CustomPipelineEngine(PipelineEngine):
 
             prev_micro_batch_id = micro_batch_id
             step_id += 1
-            # TODO: halting condition
-            if step_id >= 10:
-                done = True
+            if num_batches_done == num_batches:
+                break
 
-        return [self.tokenizer.batch_decode(input_ids) for input_ids in all_input_ids]
+        for example in examples:
+            del example['done']
+            del example['num_new_tokens']
+        return examples
 
 
     # make our forward pass method apply
@@ -609,14 +656,18 @@ class CustomPipelineEngine(PipelineEngine):
 class CustomPipelineModule(PipelineModule):
     def __init__(self, layers, model=None, **kwargs):
         # Assign to list to avoid registering the nn.Module
-        self.model = [model]
+        self._model = [model]
         super().__init__(layers, **kwargs)
 
+    @property
+    def model(self):
+        return self._model[0]
+
     def set_dpo_reference_mode(self, dpo_reference_mode):
-        self.model[0].set_dpo_reference_mode(dpo_reference_mode)
+        self.model.set_dpo_reference_mode(dpo_reference_mode)
 
     def set_sampling_mode(self, sampling_mode):
-        self.model[0].set_sampling_mode(sampling_mode)
+        self.model.set_sampling_mode(sampling_mode)
 
     def _partition_layers(self, method='uniform'):
         num_stages = self._topo.get_dim('pipe')
