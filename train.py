@@ -79,7 +79,13 @@ def write_metrics(tb_writer, prefix, metrics, step):
                 tb_writer.add_scalar(f'{prefix}/loss_quantile_{quantile:.3f}', value, step)
 
     if len(metrics) > 2:
-        entropy = metrics[2].view(-1)
+        hidden_norm_avg = metrics[2].mean().item()
+        tb_writer.add_scalar(f'{prefix}/hidden_norm_avg', hidden_norm_avg, step)
+        hidden_state_norms = metrics[2].view(-1)
+        tb_writer.add_histogram(f'{prefix}/hidden_norm_hist',  hidden_state_norms, step)
+
+    if len(metrics) > 3:
+        entropy = metrics[3].view(-1)
         tb_writer.add_scalar(f'{prefix}/entropy', entropy.mean().item(), step)
         if not args.no_quantiles:
             assert entropy.size() == losses.size(), (entropy.size(), losses.size())
@@ -90,8 +96,8 @@ def write_metrics(tb_writer, prefix, metrics, step):
             for quantile, value in zip(quantiles, entropy_quantiles):
                 tb_writer.add_scalar(f'{prefix}/entropy_quantile_{quantile:.3f}', value, step)
 
-    if len(metrics) > 3:
-        normalised_entropy = metrics[3].view(-1)
+    if len(metrics) > 4:
+        normalised_entropy = metrics[4].view(-1)
         tb_writer.add_scalar(f'{prefix}/normalised_entropy', normalised_entropy.mean().item(), step)
         if not args.no_quantiles:
             assert normalised_entropy.size() == losses.size()
@@ -102,30 +108,31 @@ def write_metrics(tb_writer, prefix, metrics, step):
             for quantile, value in zip(quantiles, normalised_entropy_quantiles):
                 tb_writer.add_scalar(f'{prefix}/normalised_entropy_quantile_{quantile:.3f}', value, step)
 
-    if len(metrics) > 4:
-        log_likelihood = metrics[4].mean()
+    if len(metrics) > 5:
+        log_likelihood = metrics[5].mean()
         tb_writer.add_scalar(f'{prefix}/log_likelihood', log_likelihood.item(), step)
         likelihood = torch.exp(-log_likelihood).item()
         tb_writer.add_scalar(f'{prefix}/likelihood', likelihood, step)
         perplexity = torch.exp(log_likelihood).item()
         tb_writer.add_scalar(f'{prefix}/perplexity', perplexity, step)
 
-    if len(metrics) > 5:
-        mcfaddens_pseudo_r2 = metrics[5].mean()
+    if len(metrics) > 6:
+        mcfaddens_pseudo_r2 = metrics[6].mean()
         tb_writer.add_scalar(f'{prefix}/mcfaddens_pseudo_r2', mcfaddens_pseudo_r2.item(), step)
 
-    if len(metrics) > 6:
-        tb_writer.add_scalar(f'{prefix}/top1_accuracy', metrics[6].mean().item(), step)
-        tb_writer.add_scalar(f'{prefix}/top5_accuracy', metrics[7].mean().item(), step)
-        tb_writer.add_scalar(f'{prefix}/top20_accuracy', metrics[8].mean().item(), step)
-
-    if len(metrics) > 9:
-        tb_writer.add_scalar(f'{prefix}/load_balancing_loss', metrics[9].mean().item(), step)
+    if len(metrics) > 7:
+        tb_writer.add_scalar(f'{prefix}/top1_accuracy', metrics[7].mean().item(), step)
+        tb_writer.add_scalar(f'{prefix}/top5_accuracy', metrics[8].mean().item(), step)
+        tb_writer.add_scalar(f'{prefix}/top20_accuracy', metrics[9].mean().item(), step)
 
     if len(metrics) > 10:
-        tb_writer.add_scalar(f'{prefix}/alternate_load_balancing_loss', metrics[10].mean().item(), step)
+        tb_writer.add_scalar(f'{prefix}/load_balancing_loss', metrics[10].mean().item(), step)
+
+    if len(metrics) > 11:
+        tb_writer.add_scalar(f'{prefix}/alternate_load_balancing_loss', metrics[11].mean().item(), step)
 
     return loss
+
 
 def evaluate_single(model_engine, name, eval_dataloader, tb_writer, step, eval_gradient_accumulation_steps):
     orig_micro_batches = model_engine.micro_batches
