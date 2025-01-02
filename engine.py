@@ -73,7 +73,7 @@ class CustomPipelineEngine(PipelineEngine):
         self.lora_model = [lora_model]
         self.tokenizer = tokenizer
         eos_token_ids = set()
-        if self.tokenizer.eos_token_id is not None:
+        if self.tokenizer is not None and self.tokenizer.eos_token_id is not None:
             eos_token_ids.add(self.tokenizer.eos_token_id)
         model_config = self.module.model.config
         if model_config.eos_token_id:

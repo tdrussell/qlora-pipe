@@ -1,24 +1,29 @@
+# Unsloth Zoo - Utilities for Unsloth
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
 #
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# You should have received a copy of the GNU Lesser General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 # I (tdrussell) made a few modifications.
 
 import torch
 
+from deepspeed.runtime.activation_checkpointing.checkpointing import detach_variable
+
 
 class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
     """
+    Code licensed under LGPL
     Saves VRAM by smartly offloading to RAM.
     Tiny hit to performance, since we mask the movement via non blocking calls.
     """
@@ -38,10 +43,12 @@ class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
     @torch.amp.custom_bwd(device_type='cuda')
     def backward(ctx, *grads):
         (hidden_states,) = ctx.saved_tensors
-        hidden_states = hidden_states.to("cuda", non_blocking = True).detach()
-        hidden_states.requires_grad = True
+        hidden_states = hidden_states.to("cuda:0", non_blocking = True).detach()
+        hidden_states.requires_grad_(True)
+        args = detach_variable(ctx.args)
+        inputs = (hidden_states,) + args
         with torch.enable_grad():
-            outputs = ctx.forward_function(hidden_states, *ctx.args)
+            outputs = ctx.forward_function(*inputs)
 
         output_tensors = []
         grad_tensors = []
@@ -50,12 +57,11 @@ class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
                 output_tensors.append(out)
                 grad_tensors.append(grad)
         torch.autograd.backward(output_tensors, grad_tensors)
-
-        return (None, hidden_states.grad,) + (None,)*len(ctx.args)
+        return (None,) + tuple(input.grad for input in inputs)
     pass
 pass
 
 
-# hidden_states must be the first argument or this won't work
+@torch._disable_dynamo
 def unsloth_checkpoint(function, *args):
-    return Unsloth_Offloaded_Gradient_Checkpointer.apply(function, args[0], *args[1:])
+    return Unsloth_Offloaded_Gradient_Checkpointer.apply(function, *args)
