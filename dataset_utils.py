@@ -8,6 +8,7 @@ import torch
 import datasets
 from axolotl.utils.dict import DictDefault
 from axolotl.utils.data import prepare_dataset
+from axolotl.utils.trainer import process_datasets_for_packing
 from tqdm import tqdm
 import yaml
 
@@ -94,6 +95,10 @@ def load_axolotl_dataset(dataset_path, tokenizer, sequence_len, eval_size):
     train_data.set_format(type='torch')
     if eval_data is not None:
         eval_data.set_format(type='torch')
+    # This used to always be called, but Axolotl changed it at some point. It drops examples longer
+    # than the sequence length, so make sure we call it.
+    with zero_first(is_main_process()):
+        train_data, eval_data = process_datasets_for_packing(cfg, train_data, eval_data)
     return train_data, eval_data
 
 
