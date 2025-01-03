@@ -43,7 +43,7 @@ class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
     @torch.amp.custom_bwd(device_type='cuda')
     def backward(ctx, *grads):
         (hidden_states,) = ctx.saved_tensors
-        hidden_states = hidden_states.to("cuda:0", non_blocking = True).detach()
+        hidden_states = hidden_states.to("cuda", non_blocking = True).detach()
         hidden_states.requires_grad_(True)
         args = detach_variable(ctx.args)
         inputs = (hidden_states,) + args
