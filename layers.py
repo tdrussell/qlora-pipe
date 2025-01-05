@@ -123,9 +123,10 @@ class OutputLayer(nn.Module):
             # When sampling only compute the last logits.
             hidden_states = hidden_states[:, -1:, :]
         labels = labels.to(hidden_states.device)
-        if self.logit_scale != 1.0:
-            hidden_states = hidden_states * self.logit_scale
-        logits = self.lm_head(hidden_states)
+        if self.logit_scale == 1.0:
+            logits = self.lm_head(hidden_states)
+        else:
+            logits = self.lm_head(self.logit_scale * hidden_states)
         if self.logit_softcapping is not None and self.logit_softcapping > 0:
             logits = logits / self.logit_softcapping
             logits = torch.tanh(logits)
@@ -213,11 +214,14 @@ class OutputLayer(nn.Module):
             # Compute McFadden's Pseudo-R² metric using log(vocab_size) as the null log-likelihood.
             mcfaddens_pseudo_r2 = 1 - (log_likelihood / log_vocab_size)
             accuracies = top_k_accuracy(flat_logits, flat_labels, k_list=[1, 5, 20])
+            # Compute the norms of the (pre-logit-scaled) hidden states
+            hidden_state_norms = torch.norm(hidden_states.float(), dim=-1)
+            hidden_state_norms = hidden_state_norms.view(-1)[flat_loss_mask]
         if loss is None:
             # Normal language modeling loss types (e.g. not DPO)
             loss = loss_unreduced.mean()
         loss_unreduced = loss_unreduced.detach()
-        return loss, loss_unreduced, entropy, normalised_entropy, log_likelihood, mcfaddens_pseudo_r2, *accuracies
+        return loss, loss_unreduced, hidden_state_norms, entropy, normalised_entropy, log_likelihood, mcfaddens_pseudo_r2, *accuracies
 
 
 def load_balancing_loss_func(gate_logits: torch.Tensor, num_experts: torch.Tensor = None, top_k=2) -> float:
