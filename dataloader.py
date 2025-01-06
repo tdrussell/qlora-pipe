@@ -19,8 +19,7 @@ PAD_TO_MULTIPLE = 64
 
 def split_batch(batch, pieces):
     example_tuple, labels = batch
-    if is_main_process():
-        print(f'before GAS splitting, batch size: {example_tuple[0].size(0)}, total tokens: {example_tuple[0].numel()}')
+    print(f'before GAS splitting, input_ids shape: {example_tuple[0].shape}, total tokens: {example_tuple[0].numel()}')
     split_size = example_tuple[0].size(0) // pieces
     split_examples = zip(*(torch.split(tensor, split_size) for tensor in example_tuple))
     return [(ex, None) for ex in split_examples]
@@ -201,6 +200,8 @@ class PipelineDataLoader:
             rejected_examples = []
             for example in examples:
                 del example['length']
+                if 'token_type_ids' in example:
+                    del example['token_type_ids']
                 rejected_example = {}
                 for key in list(example.keys()):
                     if 'rejected_' in key:

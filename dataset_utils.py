@@ -8,6 +8,7 @@ import torch
 import datasets
 from axolotl.utils.dict import DictDefault
 from axolotl.utils.data import prepare_dataset
+from axolotl.utils.trainer import process_datasets_for_packing
 from tqdm import tqdm
 import yaml
 
@@ -18,30 +19,32 @@ NUM_PROC = min(64, os.cpu_count())
 
 
 def yield_sequences_from_token_batch(tokenizer, token_batch, sequence_len):
-    need = sequence_len
-    example_tokens = []
+    # Initialize sequence_tokens with BOS token if it exists
+    sequence_tokens = [tokenizer.bos_token_id] if tokenizer.bos_token_id is not None else []
     for tokens in tqdm(token_batch):
         tokens = tokens.tolist()
-        assert tokens[-1] != tokenizer.eos_token_id, tokens[-1]
+        assert len(tokens) > 0, "Empty tokens list"
+        assert tokens[-1] != tokenizer.eos_token_id, f"Token list already ends with EOS: {tokens[-1]}"
         tokens.append(tokenizer.eos_token_id)
-        while len(tokens) > 0:
-            taken = tokens[:need]
-            tokens = tokens[need:]
-            need -= len(taken)
-            example_tokens.extend(taken)
-            if len(example_tokens) >= sequence_len:
-                assert len(example_tokens) == sequence_len
-                # Force each sequence to start with BOS.
-                # TODO: can we do this better? It's possible that the first token is EOS followed by BOS.
-                if tokenizer.bos_token_id is not None and example_tokens[0] != tokenizer.bos_token_id:
-                    example_tokens = [tokenizer.bos_token_id] + example_tokens[:-1]
-                yield example_tokens
-                need = sequence_len
-                example_tokens = []
+        idx = 0
+        # Skip the auto-generated BOS token if present
+        if tokenizer.bos_token_id is not None and tokens[0] == tokenizer.bos_token_id:
+            idx += 1
+        while idx < len(tokens):
+            # Calculate how many tokens are needed to fill the sequence
+            need = sequence_len - len(sequence_tokens)
+            taken = tokens[idx:idx + need]
+            idx += len(taken)
+            sequence_tokens.extend(taken)
+            if len(sequence_tokens) >= sequence_len:
+                assert len(sequence_tokens) == sequence_len
+                yield sequence_tokens
+                # Reset sequence_tokens with BOS token if it exists
+                sequence_tokens = [tokenizer.bos_token_id] if tokenizer.bos_token_id is not None else []
     # yield anything remaining
     # TODO: disabled until I get training working with variable length sequences
-    # if len(example_tokens) > 0:
-    #     yield example_tokens
+    # if len(sequence_tokens) > 0:
+    #     yield sequence_tokens
 
 
 def slice_into_chunks(x, sequence_len, overlap=0):
@@ -94,6 +97,10 @@ def load_axolotl_dataset(dataset_path, tokenizer, sequence_len, eval_size):
     train_data.set_format(type='torch')
     if eval_data is not None:
         eval_data.set_format(type='torch')
+    # This used to always be called, but Axolotl changed it at some point. It drops examples longer
+    # than the sequence length, so make sure we call it.
+    with zero_first(is_main_process()):
+        train_data, eval_data = process_datasets_for_packing(cfg, train_data, eval_data)
     return train_data, eval_data
 
 

@@ -7,7 +7,6 @@ import time
 import itertools
 from contextlib import contextmanager
 import json
-import gc
 
 import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -25,8 +24,7 @@ import dataloader
 from saver import Saver
 from utils import is_main_process, DTYPE_MAP
 import engine
-import llama_pipe
-import mixtral_pipe
+import models
 import unsloth_utils
 import hqq_utils
 
@@ -81,7 +79,13 @@ def write_metrics(tb_writer, prefix, metrics, step):
                 tb_writer.add_scalar(f'{prefix}/loss_quantile_{quantile:.3f}', value, step)
 
     if len(metrics) > 2:
-        entropy = metrics[2].view(-1)
+        hidden_norm_avg = metrics[2].mean().item()
+        tb_writer.add_scalar(f'{prefix}/hidden_norm_avg', hidden_norm_avg, step)
+        hidden_state_norms = metrics[2].view(-1)
+        tb_writer.add_histogram(f'{prefix}/hidden_norm_hist',  hidden_state_norms, step)
+
+    if len(metrics) > 3:
+        entropy = metrics[3].view(-1)
         tb_writer.add_scalar(f'{prefix}/entropy', entropy.mean().item(), step)
         if not args.no_quantiles:
             assert entropy.size() == losses.size(), (entropy.size(), losses.size())
@@ -92,8 +96,8 @@ def write_metrics(tb_writer, prefix, metrics, step):
             for quantile, value in zip(quantiles, entropy_quantiles):
                 tb_writer.add_scalar(f'{prefix}/entropy_quantile_{quantile:.3f}', value, step)
 
-    if len(metrics) > 3:
-        normalised_entropy = metrics[3].view(-1)
+    if len(metrics) > 4:
+        normalised_entropy = metrics[4].view(-1)
         tb_writer.add_scalar(f'{prefix}/normalised_entropy', normalised_entropy.mean().item(), step)
         if not args.no_quantiles:
             assert normalised_entropy.size() == losses.size()
@@ -104,30 +108,31 @@ def write_metrics(tb_writer, prefix, metrics, step):
             for quantile, value in zip(quantiles, normalised_entropy_quantiles):
                 tb_writer.add_scalar(f'{prefix}/normalised_entropy_quantile_{quantile:.3f}', value, step)
 
-    if len(metrics) > 4:
-        log_likelihood = metrics[4].mean()
+    if len(metrics) > 5:
+        log_likelihood = metrics[5].mean()
         tb_writer.add_scalar(f'{prefix}/log_likelihood', log_likelihood.item(), step)
         likelihood = torch.exp(-log_likelihood).item()
         tb_writer.add_scalar(f'{prefix}/likelihood', likelihood, step)
         perplexity = torch.exp(log_likelihood).item()
         tb_writer.add_scalar(f'{prefix}/perplexity', perplexity, step)
 
-    if len(metrics) > 5:
-        mcfaddens_pseudo_r2 = metrics[5].mean()
+    if len(metrics) > 6:
+        mcfaddens_pseudo_r2 = metrics[6].mean()
         tb_writer.add_scalar(f'{prefix}/mcfaddens_pseudo_r2', mcfaddens_pseudo_r2.item(), step)
 
-    if len(metrics) > 6:
-        tb_writer.add_scalar(f'{prefix}/top1_accuracy', metrics[6].mean().item(), step)
-        tb_writer.add_scalar(f'{prefix}/top5_accuracy', metrics[7].mean().item(), step)
-        tb_writer.add_scalar(f'{prefix}/top20_accuracy', metrics[8].mean().item(), step)
-
-    if len(metrics) > 9:
-        tb_writer.add_scalar(f'{prefix}/load_balancing_loss', metrics[9].mean().item(), step)
+    if len(metrics) > 7:
+        tb_writer.add_scalar(f'{prefix}/top1_accuracy', metrics[7].mean().item(), step)
+        tb_writer.add_scalar(f'{prefix}/top5_accuracy', metrics[8].mean().item(), step)
+        tb_writer.add_scalar(f'{prefix}/top20_accuracy', metrics[9].mean().item(), step)
 
     if len(metrics) > 10:
-        tb_writer.add_scalar(f'{prefix}/alternate_load_balancing_loss', metrics[10].mean().item(), step)
+        tb_writer.add_scalar(f'{prefix}/load_balancing_loss', metrics[10].mean().item(), step)
+
+    if len(metrics) > 11:
+        tb_writer.add_scalar(f'{prefix}/alternate_load_balancing_loss', metrics[11].mean().item(), step)
 
     return loss
+
 
 def evaluate_single(model_engine, name, eval_dataloader, tb_writer, step, eval_gradient_accumulation_steps):
     orig_micro_batches = model_engine.micro_batches
@@ -232,7 +237,7 @@ def one_at_a_time():
         deepspeed.comm.barrier()
 
 
-def load_pipeline_model_with_lora(config, model_type):
+def load_pipeline_model_with_lora(config, model_type, dynamic_shape=False):
     full_fine_tune = config['full_fine_tune']
 
     if config.get('quantization', None):
@@ -264,19 +269,19 @@ def load_pipeline_model_with_lora(config, model_type):
         quantization_config = None
 
     if model_type == 'llama':
-        model = llama_pipe.LlamaForCausalLMPipe(config, quantization_config=quantization_config)
+        model = models.LlamaForCausalLMPipe(config, quantization_config=quantization_config)
     elif model_type == 'mixtral':
-        model = mixtral_pipe.MixtralForCausalLMPipe(config, quantization_config=quantization_config)
+        model = models.MixtralForCausalLMPipe(config, quantization_config=quantization_config)
     elif model_type == 'qwen2':
-        model = llama_pipe.Qwen2ForCausalLMPipe(config, quantization_config=quantization_config)
+        model = models.Qwen2ForCausalLMPipe(config, quantization_config=quantization_config)
     elif model_type == 'cohere':
-        model = llama_pipe.CohereForCausalLMPipe(config, quantization_config=quantization_config)
+        model = models.CohereForCausalLMPipe(config, quantization_config=quantization_config)
     elif model_type == 'phi3':
-        model = llama_pipe.Phi3ForCausalLMPipe(config, quantization_config=quantization_config)
+        model = models.Phi3ForCausalLMPipe(config, quantization_config=quantization_config)
     elif model_type == 'gemma2':
-        model = llama_pipe.Gemma2ForCausalLMPipe(config, quantization_config=quantization_config)
+        model = models.Gemma2ForCausalLMPipe(config, quantization_config=quantization_config)
     elif model_type == 'mistral':
-        model = llama_pipe.MistralForCausalLMPipe(config, quantization_config=quantization_config)
+        model = models.MistralForCausalLMPipe(config, quantization_config=quantization_config)
     else:
         raise NotImplementedError()
 
@@ -308,6 +313,7 @@ def load_pipeline_model_with_lora(config, model_type):
             partition_method=partition_method,
             use_column_major_topology=config.get('use_column_major_topology', False),
             model=model,
+            dynamic_shape=dynamic_shape,
         )
     else:
         pipeline_model = engine.CustomPipelineModule(
@@ -388,7 +394,8 @@ if __name__ == '__main__':
         model_config = json.load(f)
         model_type = model_config.get('model_type', 'llama')
 
-    tokenizer = transformers.AutoTokenizer.from_pretrained(config['model'], local_files_only=True)
+    # Pad on left to support training techniques that involve sampling from the model.
+    tokenizer = transformers.AutoTokenizer.from_pretrained(config['model'], local_files_only=True, model_max_length=int(1e30), padding_side='left')
     # TODO: do we want to do this with cohere models? By default the EOS token is <|END_OF_TURN_TOKEN|>
     # if model_type == 'cohere':
     #     tokenizer.eos_token = '<EOS_TOKEN>'
@@ -502,7 +509,7 @@ if __name__ == '__main__':
     # is different, etc. I need to really look through all the implications of this. This change is so
     # that we keep the normal optimizer, but the communication dtype is changed so that we don't
     # unnecessarily cast grads to fp32.
-    weight_dtype = DTYPE_MAP[config.get('lora_weight_dtype')]
+    weight_dtype = DTYPE_MAP[config.get('lora_weight_dtype', config.get('model_weight_dtype', 'float32'))]
     model_engine.communication_data_type = weight_dtype
 
     # TODO: the main DeepSpeedEngine forces all parameters to the GPU, and also does things like
@@ -512,8 +519,8 @@ if __name__ == '__main__':
     if config.get('offload_mlp_to_cpu', False):
         assert config['activation_checkpointing']  # MLP offloading only works with activation checkpointing
         for module in pipeline_model.modules():
-            if hasattr(module, 'offload_mlp_to_cpu'):
-                module.offload_mlp_to_cpu()
+            if hasattr(module, 'move_mlp_to_cpu'):
+                module.move_mlp_to_cpu()
         torch.cuda.empty_cache()
 
     train_dataloader = dataloader.PipelineDataLoader(
