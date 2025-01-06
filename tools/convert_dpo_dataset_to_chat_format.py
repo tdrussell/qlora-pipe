@@ -1,9 +1,11 @@
 # Convert a DPO dataset with prompt, chosen, rejected fields into chat format.
 # Usage: python convert_dpo_dataset_to_chat_format.py hf_username/some_dataset path/to/output/directory
-import sys
 import os
+import sys
 from pathlib import Path
+
 import datasets
+
 
 dataset_path, converted_path = sys.argv[1:]
 

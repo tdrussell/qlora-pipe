@@ -1,17 +1,21 @@
 import math
-import sys
 import os.path
+import sys
+
+
 sys.path.insert(0, os.path.abspath('axolotl/src'))
 
-import torch
-from torch.utils.data import DataLoader
-import transformers
 import accelerate
+import torch
+import transformers
 from deepspeed import comm as dist
-from tqdm import tqdm
+from torch.utils.data import DataLoader
 
 from axolotl.utils.collators import DataCollatorForSeq2Seq
-from utils import *
+
+
+# from utils import *
+
 
 # A100 wants padding to multiple of 64, other cards are efficient with smaller, so just do 64
 PAD_TO_MULTIPLE = 64
@@ -173,7 +177,7 @@ class PipelineDataLoader:
         return len(self.data_sampler) * self.gradient_accumulation_steps
 
     def __next__(self):
-        if self.next_micro_batch == None:
+        if self.next_micro_batch is None:
             self.next_micro_batch = next(self.data)
         ret = self.next_micro_batch
         try:
@@ -191,8 +195,7 @@ class PipelineDataLoader:
     def _pull_batches_from_dataloader(self):
         for batch in self.dataloader:
             self.num_batches_pulled += 1
-            for micro_batch in split_batch(batch, self.gradient_accumulation_steps):
-                yield micro_batch
+            yield from split_batch(batch, self.gradient_accumulation_steps)
 
     def _create_dataloader(self):
         data_collator = DataCollatorForSeq2Seq(self.tokenizer, pad_to_multiple_of=self.pad_to_multiple_of)

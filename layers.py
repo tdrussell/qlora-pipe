@@ -2,9 +2,9 @@ import math
 
 import torch
 import torch.nn.functional as F
-from torch import nn
 import transformers
 from deepspeed.runtime.pipe import module as ds_pipe_module
+from torch import nn
 
 from kernels.cross_entropy_loss import Fast_CrossEntropyLoss
 

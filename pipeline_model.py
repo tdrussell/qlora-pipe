@@ -1,17 +1,17 @@
 import os
-from inspect import signature
 from collections import defaultdict
+from inspect import signature
 
-from torch import nn
+import accelerate
+import bitsandbytes as bnb
 import transformers
 from deepspeed.accelerator import get_accelerator
-from transformers.integrations import get_keys_to_not_convert
-import bitsandbytes as bnb
-import accelerate
 from hqq.core import quantize as hqq_quantize
+from torch import nn
+from transformers.integrations import get_keys_to_not_convert
 
-from utils import is_main_process
 import hqq_utils
+from utils import is_main_process
 
 
 class PipelineModel(nn.Module):
@@ -223,7 +223,7 @@ class LoaderUtil:
 
         if self.checkpoint_metadata is not None:
             weight_map = self.checkpoint_metadata['weight_map']
-            needed_checkpoint_files = set(weight_map[key.replace('orig.', '')] for key in expected_keys)
+            needed_checkpoint_files = {weight_map[key.replace('orig.', '')] for key in expected_keys}
         else:
             needed_checkpoint_files = ['model.safetensors']
 

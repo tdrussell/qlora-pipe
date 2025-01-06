@@ -17,7 +17,6 @@
 # I (tdrussell) made a few modifications.
 
 import torch
-
 from deepspeed.runtime.activation_checkpointing.checkpointing import detach_variable
 
 

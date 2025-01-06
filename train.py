@@ -1,32 +1,33 @@
 import argparse
-import os
-from datetime import datetime, timezone
-import shutil
 import glob
-import time
 import itertools
-from contextlib import contextmanager
 import json
+import os
+import shutil
+import time
+from contextlib import contextmanager
+from datetime import datetime, timezone
 
-import torch
-from torch.utils.tensorboard import SummaryWriter
-import transformers
-from peft import LoraConfig, get_peft_model
-from peft.optimizers import create_loraplus_optimizer
-import deepspeed
-from deepspeed.runtime.pipe.module import LayerSpec
-import toml
 import bitsandbytes
+import deepspeed
+import toml
+import torch
+import transformers
+from deepspeed.runtime.pipe.module import LayerSpec
 from hqq.core import quantize as hqq_quantize
+from torch.utils.tensorboard import SummaryWriter
 
-from dataset_utils import load_datasets
 import dataloader
-from saver import Saver
-from utils import is_main_process, DTYPE_MAP
 import engine
+import hqq_utils
 import models
 import unsloth_utils
-import hqq_utils
+from dataset_utils import load_datasets
+from peft import LoraConfig, get_peft_model
+from peft.optimizers import create_loraplus_optimizer
+from saver import Saver
+from utils import DTYPE_MAP, is_main_process
+
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--config', help='Path to TOML configuration file.')
@@ -59,7 +60,7 @@ def set_config_defaults(config):
 
 
 def get_most_recent_run_dir(output_dir):
-    return list(sorted(glob.glob(os.path.join(output_dir, '*'))))[-1]
+    return sorted(glob.glob(os.path.join(output_dir, '*')))[-1]
 
 
 def write_metrics(tb_writer, prefix, metrics, step):
@@ -211,7 +212,7 @@ def apply_max_norm_regularization(model, config):
     if len(norms) > 0:
         norms = torch.tensor(norms, dtype=torch.float32)
         if torch.any(torch.isnan(norms)):
-            raise RuntimeError(f'NaN detected in norms, probably some/all weights are NaN')
+            raise RuntimeError('NaN detected in norms, probably some/all weights are NaN')
         avg_norm = sum(norms) / len(norms)
         max_norm = max(norms)
     else:
@@ -262,7 +263,7 @@ def load_pipeline_model_with_lora(config, model_type, dynamic_shape=False):
             # Use ATEN backend if possible, else PYTORCH. PYTORCH_COMPILE was only a tiny bit faster, and requires triton nightly.
             hqq_quantize.HQQLinear.set_backend(hqq_quantize.HQQBackend.ATEN if quantization_config.use_aten() else hqq_quantize.HQQBackend.PYTORCH)
         else:
-            raise NotImplementedError(f'Invalid quantization config')
+            raise NotImplementedError('Invalid quantization config')
         if is_main_process():
             print(f'Quantization config: {quantization_config}')
     else:
@@ -549,7 +550,7 @@ if __name__ == '__main__':
         print(f'eval_data_length: {eval_data_length}, eval_steps: {config["eval_steps"]}; evals per epoch: {evals_per_epoch}. '
               f'We will be spending approximately {fraction_evaling*100:.2f}% of our time evaluating.')
         if fraction_evaling > 0.15:
-            print(f'WARNING: eval dataset is unusually large compared to eval_steps. We will spend a lot of time evaluating. Lowering eval_size and/or bumping eval_steps is recommended.')
+            print('WARNING: eval dataset is unusually large compared to eval_steps. We will spend a lot of time evaluating. Lowering eval_size and/or bumping eval_steps is recommended.')
         print()
 
     # handle Deepspeed optimizer wrapper (e.g. BF16_Optimizer)

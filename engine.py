@@ -1,23 +1,41 @@
 from collections import deque
 
-import torch
-from torch import nn
-
 import deepspeed
-from deepspeed.accelerator import get_accelerator
+import torch
 from deepspeed import comm as dist
-from deepspeed.runtime.config import DeepSpeedConfig
-from deepspeed.runtime.pipe.engine import PipelineEngine, TRAIN_BATCH_TIMER, PIPE_SEND_OUTPUT_TIMER, PIPE_SEND_GRAD_TIMER, PIPE_RECV_INPUT_TIMER, PIPE_RECV_GRAD_TIMER, BATCH_INPUT_TIMER
-from deepspeed.runtime.pipe import schedule, p2p
-from deepspeed.runtime.utils import PartitionedTensor
-from deepspeed.runtime.activation_checkpointing import checkpointing as ds_checkpointing
-from deepspeed.runtime.pipe.module import PipelineModule
+from deepspeed.accelerator import get_accelerator
 from deepspeed.runtime import utils as ds_utils
-from deepspeed.runtime.pipe.module import LayerSpec
-from deepspeed.runtime.pipe.schedule import (
-    PipeSchedule, OptimizerStep, ReduceGrads, ReduceTiedGrads, PipeInstruction, BufferOpInstruction, LoadMicroBatch, ForwardPass, BackwardPass,
-    SendActivation, RecvActivation, SendGrad, RecvGrad, _is_even, _is_odd,
+from deepspeed.runtime.activation_checkpointing import checkpointing as ds_checkpointing
+from deepspeed.runtime.config import DeepSpeedConfig
+from deepspeed.runtime.pipe import p2p, schedule
+from deepspeed.runtime.pipe.engine import (
+    BATCH_INPUT_TIMER,
+    PIPE_RECV_GRAD_TIMER,
+    PIPE_RECV_INPUT_TIMER,
+    PIPE_SEND_GRAD_TIMER,
+    PIPE_SEND_OUTPUT_TIMER,
+    TRAIN_BATCH_TIMER,
+    PipelineEngine,
 )
+from deepspeed.runtime.pipe.module import LayerSpec, PipelineModule
+from deepspeed.runtime.pipe.schedule import (
+    BackwardPass,
+    BufferOpInstruction,
+    ForwardPass,
+    OptimizerStep,
+    PipeInstruction,
+    PipeSchedule,
+    RecvActivation,
+    RecvGrad,
+    ReduceGrads,
+    ReduceTiedGrads,
+    SendActivation,
+    SendGrad,
+    _is_even,
+    _is_odd,
+)
+from deepspeed.runtime.utils import PartitionedTensor
+from torch import nn
 
 from utils import eta_str, log
 
@@ -90,7 +108,7 @@ class CustomPipelineEngine(PipelineEngine):
 
     def train_batch(self):
         if not torch._C.is_grad_enabled():
-            raise RuntimeError(f'train_batch() requires gradients enabled. Use eval_batch() instead.')
+            raise RuntimeError('train_batch() requires gradients enabled. Use eval_batch() instead.')
 
         # sequence length may change between macro batches (but not between gradient accumulation steps)
         self.reset_activation_shape()
@@ -131,7 +149,7 @@ class CustomPipelineEngine(PipelineEngine):
 
         # Monitoring
         if self.global_rank == 0 and self.monitor.enabled:
-            self.summary_events = [(f'Train/Samples/train_loss', self.agg_train_loss.mean().item(),
+            self.summary_events = [('Train/Samples/train_loss', self.agg_train_loss.mean().item(),
                                     self.global_samples)]
             self.monitor.write_events(self.summary_events)
 
@@ -173,7 +191,7 @@ class CustomPipelineEngine(PipelineEngine):
         agg_eval_losses = self._aggregate_total_losses()
 
         if self.global_rank == 0 and self.monitor.enabled:
-            self.summary_events = [(f'Train/Samples/eval_loss', agg_eval_losses[0].mean().item(), self.global_samples)]
+            self.summary_events = [('Train/Samples/eval_loss', agg_eval_losses[0].mean().item(), self.global_samples)]
             self.monitor.write_events(self.summary_events)
 
         # Restore the training iterator
@@ -298,7 +316,7 @@ class CustomPipelineEngine(PipelineEngine):
             if isinstance(outputs, tuple):
                 first_output = outputs[0]
                 # TODO: Improve pipe partitioning to pass multiple tensors that require grads
-                assert all([torch.is_tensor(elt) and elt.requires_grad is False for elt in outputs[1:]])
+                assert all(torch.is_tensor(elt) and elt.requires_grad is False for elt in outputs[1:])
                 outputs_tail = outputs[1:]
             elif torch.is_tensor(outputs):
                 first_output = outputs
@@ -420,7 +438,7 @@ class CustomPipelineEngine(PipelineEngine):
             if isinstance(outputs, tuple):
                 first_output = outputs[0]
                 # TODO: Improve pipe partitioning to pass multiple tensors that require grads
-                assert all([torch.is_tensor(elt) and elt.requires_grad is False for elt in outputs[1:]])
+                assert all(torch.is_tensor(elt) and elt.requires_grad is False for elt in outputs[1:])
                 outputs_tail = outputs[1:]
             elif torch.is_tensor(outputs):
                 first_output = outputs
@@ -511,7 +529,7 @@ class CustomPipelineEngine(PipelineEngine):
             if isinstance(outputs, tuple):
                 first_output = outputs[0]
                 # TODO: Improve pipe partitioning to pass multiple tensors that require grads
-                assert all([torch.is_tensor(elt) and elt.requires_grad is False for elt in outputs[1:]])
+                assert all(torch.is_tensor(elt) and elt.requires_grad is False for elt in outputs[1:])
                 outputs_tail = outputs[1:]
             elif torch.is_tensor(outputs):
                 first_output = outputs

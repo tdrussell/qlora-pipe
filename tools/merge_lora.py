@@ -1,16 +1,17 @@
 # Usage: python merge_lora.py input_path lora_path output_path
 # Output path is created if it doesn't exist
 
-import os
-from pathlib import Path
-import shutil
-
 import argparse
-import torch
+import os
+import shutil
+from pathlib import Path
+
 import safetensors
+import torch
+from tqdm import tqdm
+
 import peft
 
-from tqdm import tqdm
 
 parser = argparse.ArgumentParser()
 parser.add_argument("input_path", type=str, help="The path to the input directory.")

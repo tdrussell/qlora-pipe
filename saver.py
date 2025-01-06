@@ -2,15 +2,16 @@ import glob
 import json
 import os
 import shutil
-import time
 import sys
+import time
 from pathlib import Path
+
 import deepspeed
 import torch
 import transformers
-
 from safetensors.torch import save_file
-from utils import is_main_process, DTYPE_MAP
+
+from utils import DTYPE_MAP, is_main_process
 
 
 last_checkpoint_time = None
@@ -54,7 +55,7 @@ class Saver:
         self.best_loss = None
         best_loss_path = os.path.join(self.save_root, 'best_loss.txt')
         if os.path.exists(best_loss_path) and os.path.isdir(os.path.join(self.save_root, 'best_loss')):
-            with open(best_loss_path, 'r') as f:
+            with open(best_loss_path) as f:
                 self.best_loss = float(f.read())
             print(f'Loaded best loss from disk: {self.best_loss}')
 
