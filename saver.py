@@ -45,6 +45,7 @@ class Saver:
         self.args = args
         self.config = config
         self.keep_states = config.get('keep_states', -1)
+        self.checkpoint_on_save = config.get('checkpoint_on_save', False)
         self.chrono_states = {
             'step': [],
             'global_step': [],
@@ -209,6 +210,8 @@ class Saver:
 
         if ('save_steps' in self.config and step % self.config['save_steps'] == 0) or should_manually_save:
             self.save_model(f'step{step}')
+            if self.checkpoint_on_save and not should_manually_save:
+                self.save_checkpoint(step)
 
         pending_save_best_loss = os.path.exists(os.path.join(self.save_root, ".pending_save_best_loss"))
         if pending_save_best_loss:
@@ -220,7 +223,7 @@ class Saver:
                     print(f"New best evaluation loss: {self.best_loss:.4f}")
                 os.replace(os.path.join(self.save_root, '.pending_save_best_loss'), os.path.join(self.save_root, 'best_loss.txt'))
 
-        if need_to_checkpoint(self.config) or should_manually_save:
+        if (not self.checkpoint_on_save and need_to_checkpoint(self.config)) or should_manually_save:
             self.save_checkpoint(step)
 
         if should_manually_quit:

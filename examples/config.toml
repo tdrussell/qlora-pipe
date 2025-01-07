@@ -54,6 +54,7 @@ eval_after_last_step = false # do a final eval after the training completes
 logging_steps = 10  # how often to log in Tensorboard
 save_steps = 200  # how often to save the model
 checkpoint_every_n_minutes = 60  # how frequently to checkpoint training states (used for resuming training)
+# checkpoint_on_save = true  # alternative to the above, this will cause a checkpoint save every time a regular save occurs (note: this setting takes precedence over checkpoint_every_n_minutes)
 # dtype to load the underlying model weights in
 model_weight_dtype = 'bfloat16'
 # dtype for the LoRA weights
