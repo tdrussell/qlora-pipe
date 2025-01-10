@@ -13,18 +13,26 @@
 # limitations under the License.
 
 import triton
+import torch
 MAX_FUSED_SIZE = 65536
 next_power_of_2 = triton.next_power_of_2
+
+def device_warp_size():
+    if torch.cuda.is_available() and torch.version.hip and torch.cuda.get_device_capability(0)[0] < 10:
+        return 64
+    else:
+        return 32
 
 def calculate_settings(n):
     BLOCK_SIZE = next_power_of_2(n)
     if BLOCK_SIZE > MAX_FUSED_SIZE:
         raise RuntimeError(f"Cannot launch Triton kernel since n = {n} exceeds "\
                            f"the maximum CUDA blocksize = {MAX_FUSED_SIZE}.")
+    warp_scalar = 32/float(device_warp_size())
     num_warps = 4
-    if   BLOCK_SIZE >= 32768: num_warps = 32
-    elif BLOCK_SIZE >=  8192: num_warps = 16
-    elif BLOCK_SIZE >=  2048: num_warps = 8
+    if   BLOCK_SIZE >= 32768: num_warps = 32*warp_scalar
+    elif BLOCK_SIZE >=  8192: num_warps = 16*warp_scalar
+    elif BLOCK_SIZE >=  2048: num_warps = 8*warp_scalar
     return BLOCK_SIZE, num_warps
 pass
 

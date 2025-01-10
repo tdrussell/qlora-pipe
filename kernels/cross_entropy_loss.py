@@ -15,7 +15,7 @@
 import triton
 import triton.language as tl
 import torch
-from .utils import calculate_settings, MAX_FUSED_SIZE
+from .utils import calculate_settings, MAX_FUSED_SIZE, device_warp_size
 from transformers.models.llama.modeling_llama import logger
 
 
@@ -267,7 +267,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
                 BLOCK_SIZE = MAX_FUSED_SIZE,
                 DO_LOGIT_SCALING = (logit_scale != 1.0),
                 LOGIT_SCALE = logit_scale,
-                num_warps  = 32,
+                num_warps  = 32 if device_warp_size() < 64 else 16,
             )
             # logsumexp(chunked_logsumexp) - x
             # Do the -x separately
