@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import torch
 import triton
 import triton.language as tl
-import torch
-from .utils import calculate_settings, MAX_FUSED_SIZE
-from transformers.models.llama.modeling_llama import logger
+
+from .utils import MAX_FUSED_SIZE, calculate_settings
 
 
 @triton.heuristics(
@@ -240,9 +240,6 @@ def _cross_entropy_backward(
 
 
 pass
-
-
-MAX_FUSED_SIZE = 65536  # 2**16
 
 
 class Fast_CrossEntropyLoss(torch.autograd.Function):

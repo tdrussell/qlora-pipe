@@ -5,11 +5,11 @@ import sys
 
 sys.path.insert(0, os.path.abspath('axolotl/src'))
 
+import datasets
 import torch
 import yaml
 from tqdm import tqdm
 
-import datasets
 from axolotl.utils.data import prepare_dataset
 from axolotl.utils.dict import DictDefault
 from axolotl.utils.trainer import process_datasets_for_packing

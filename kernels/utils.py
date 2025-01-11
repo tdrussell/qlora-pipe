@@ -12,7 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import ctypes
+
+import bitsandbytes as bnb
+import torch
 import triton
+
 
 MAX_FUSED_SIZE = 65536
 next_power_of_2 = triton.next_power_of_2
@@ -37,11 +42,7 @@ def calculate_settings(n):
 pass
 
 
-import bitsandbytes as bnb
-
 get_ptr = bnb.functional.get_ptr
-import ctypes
-import torch
 
 cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
 cdequantize_blockwise_fp16_nf4 = bnb.functional.lib.cdequantize_blockwise_fp16_nf4
