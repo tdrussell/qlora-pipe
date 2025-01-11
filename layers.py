@@ -301,6 +301,7 @@ class InputLayer(nn.Module):
         )
         position_ids = cache_position.unsqueeze(0)
 
+        original_attention_mask = attention_mask
         if self.model.model.config.model_type == 'mistral':
             attention_mask = self.model.model._update_causal_mask(
                 attention_mask, inputs_embeds, cache_position, past_key_values, use_cache, None
@@ -310,9 +311,12 @@ class InputLayer(nn.Module):
                 attention_mask, inputs_embeds, cache_position, past_key_values, None
             )
         if attention_mask is None:
-            # With FA or during sampling, attention_mask can end up being None. But with deepspeed we can't pass None
-            # between pipeline model layers. So make it an empty tensor, our code will convert that back to None.
-            attention_mask = torch.tensor([], device=device)
+            # With FA, attention_mask can end up being None. But with deepspeed we can't pass None
+            # between GPUs. So force it back to the original attention_mask.
+            # TODO: with pipeline parallelism all tensors have to be the same shape between micro batches.
+            # Can we handle None attention_mask better? Sending empty tensor and converting it later will not
+            # work, due to static shape constraints. Maybe fill the original attention mask with some signal value?
+            attention_mask = original_attention_mask
         hidden_states = inputs_embeds
         if self.model.model.config.model_type == 'gemma2':
             normalizer = torch.tensor(self.model.model.config.hidden_size**0.5, dtype=hidden_states.dtype)

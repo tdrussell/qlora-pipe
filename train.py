@@ -312,6 +312,7 @@ def load_pipeline_model_with_lora(config, model_type, dynamic_shape=False):
             checkpointable_layers=checkpointable_layers,
             activation_checkpoint_func=checkpoint_func,
             partition_method=partition_method,
+            use_column_major_topology=config.get('use_column_major_topology', False),
             model=model,
             dynamic_shape=dynamic_shape,
         )
@@ -319,7 +320,8 @@ def load_pipeline_model_with_lora(config, model_type, dynamic_shape=False):
         pipeline_model = engine.CustomPipelineModule(
             layers=layers,
             num_stages=config['pipeline_stages'],
-            partition_method=partition_method
+            partition_method=partition_method,
+            use_column_major_topology=config.get('use_column_major_topology', False),
         )
 
     target_modules = config['target_modules'] if 'target_modules' in config else 'all-linear'
