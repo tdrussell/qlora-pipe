@@ -29,7 +29,9 @@ micro_batch_size_per_gpu = 1
 # If set, completely ignores micro_batch_size_per_gpu.
 # Can be thought of as a replacement for sample packing.
 batch_size_tokens = 5000
- # number of pipeline parallel stages, must evenly divide the number of GPUs you launch the script with
+# Number of pipeline parallel stages, must evenly divide the number of GPUs you launch the script with. The lower this is, the more GPU VRAM you need, but the faster the training will be.
+# A value of 1 means the model will be loaded on every GPU in full, each GPU running its own training batches.
+# A value of 2 means the model will be split into half, the halves loaded evenly across the (2, 4, 6, 8, ...) GPUs, where GPUs will work in pairs on each batch. (And so on.)
 pipeline_stages = 1
 # Number of micro-batches sent through the pipeline for each training step.
 # If pipeline_stages > 1, a higher GAS means better GPU utilization due to smaller pipeline bubbles (where GPUs aren't overlapping computation).
