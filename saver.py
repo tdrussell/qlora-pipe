@@ -97,7 +97,8 @@ class Saver:
             shutil.copy(self.args.config, save_dir)
             if hasattr(self.args, 'deepspeed_config') and self.args.deepspeed_config is not None:
                 shutil.copy(self.args.deepspeed_config, save_dir)
-            shutil.rmtree(tmp_dir)
+            self.safe_rmtree(tmp_dir)
+
 
     def save_full_model(self, name, max_shard_size='5GB'):
         dp_id = self.model_engine.grid.get_data_parallel_rank()
@@ -145,7 +146,7 @@ class Saver:
             for path in glob.glob(os.path.join(self.config['model'], '*')):
                 if os.path.basename(path) in additional_files_to_copy:
                     shutil.copy(path, save_dir)
-            shutil.rmtree(tmp_dir)
+            self.safe_rmtree(tmp_dir)
 
     def will_save(self, type, name):
         if self.keep_states <= 0 or not is_main_process():
@@ -154,12 +155,12 @@ class Saver:
             self.chrono_states['step'].append(name)
             if len(self.chrono_states['step']) > self.keep_states:
                 print(f'Deleting {self.chrono_states["step"][0]}')
-                shutil.rmtree(os.path.join(self.save_root, self.chrono_states['step'].pop(0)))
+                self.safe_rmtree(os.path.join(self.save_root, self.chrono_states['step'].pop(0)))
         elif type == 'global_step':
             self.chrono_states['global_step'].append(name)
             if len(self.chrono_states['global_step']) > self.keep_states:
                 print(f'Deleting {self.chrono_states["global_step"][0]}')
-                shutil.rmtree(os.path.join(self.save_root, self.chrono_states['global_step'].pop(0)))
+                self.safe_rmtree(os.path.join(self.save_root, self.chrono_states['global_step'].pop(0)))
         else:
             raise ValueError(f'Unknown save type: {type}')
 
@@ -252,3 +253,15 @@ class Saver:
                     with open(os.path.join(self.save_root, '.pending_save_best_loss'), 'w') as f:
                         f.write(str(self.best_loss))
         deepspeed.comm.barrier()
+
+
+    # Attempt to remove a directory tree using exponential backoff for retries (default max wait = 31s)
+    def safe_rmtree(self, dir_path, max_retries=5, initial_wait_seconds=1):
+        for attempt in range(max_retries + 1):
+            try:
+                shutil.rmtree(dir_path)
+                return
+            except OSError as e:
+                if attempt == max_retries:
+                    raise e
+                time.sleep(initial_wait_seconds * 2**attempt)
