@@ -1,12 +1,12 @@
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from hqq.core import quantize as hqq_quantize
-import peft
-import transformers
 import torch
+import transformers
+from hqq.core import quantize as hqq_quantize
 from torch import nn
 
+import peft
 from utils import DTYPE_MAP
 
 
@@ -27,7 +27,7 @@ def _maybe_include_all_linear_layers(peft_config: peft.PeftConfig, model: nn.Mod
 
     if not isinstance(model, transformers.PreTrainedModel):
         raise ValueError(
-            f"Only instances of PreTrainedModel support `target_modules={peft.tuners.tuners_utils.INCLUDE_LINEAR_LAYERS_SHORTHAND!r}`"
+            f'Only instances of PreTrainedModel support `target_modules={peft.tuners.tuners_utils.INCLUDE_LINEAR_LAYERS_SHORTHAND!r}`'
         )
 
     # add HQQLinear
@@ -37,7 +37,7 @@ def _maybe_include_all_linear_layers(peft_config: peft.PeftConfig, model: nn.Mod
     for name, module in model.named_modules():
         # match with all linear classes.
         if isinstance(module, linear_classes):
-            names = name.rsplit(".", 1)[-1]  # get the base name
+            names = name.rsplit('.', 1)[-1]  # get the base name
             linear_module_names.add(names)
 
     # ignore the last classification head for text generation models
@@ -47,20 +47,22 @@ def _maybe_include_all_linear_layers(peft_config: peft.PeftConfig, model: nn.Mod
         linear_module_names -= {last_module_name}
     peft_config.target_modules = linear_module_names
     return peft_config
+
+
 peft.tuners.tuners_utils._maybe_include_all_linear_layers = _maybe_include_all_linear_layers
 
 
 # Monkeypatch HQQ set_backend so it doesn't spam logs with WARNING message every time HQQLinear is created
 @classmethod
 def _set_backend(cls, backend):
-    if "aten" in backend.value:
+    if 'aten' in backend.value:
         if hqq_quantize.hqq_aten_is_available is False:
-            print(
-                "ATEN/CUDA backend not availabe. Make sure you install the hqq_aten library."
-            )
+            print('ATEN/CUDA backend not availabe. Make sure you install the hqq_aten library.')
             return
     hqq_quantize.HQQLinear.backend = backend
     cls.forward = getattr(cls, backend.value)
+
+
 hqq_quantize.HQQLinear.set_backend = _set_backend
 
 
@@ -84,7 +86,7 @@ class CustomHQQConfig:
         return self.axis == 0 and all(d.get('axis', self.axis) == 0 for d in self.dynamic_config.values())
 
     def get_dict(self, full_name):
-        '''Get final config dict to use for quantization, for module with full_name.'''
+        """Get final config dict to use for quantization, for module with full_name."""
         kwargs = asdict(self)
         kwargs.pop('compute_dtype')
         kwargs.pop('skip_modules')

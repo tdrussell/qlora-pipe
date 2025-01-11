@@ -1,22 +1,23 @@
 # Usage: python merge_lora.py input_path lora_path output_path
 # Output path is created if it doesn't exist
 
-import os
-from pathlib import Path
-import shutil
-
 import argparse
-import torch
-import safetensors
-import peft
+import os
+import shutil
+from pathlib import Path
 
+import safetensors
+import torch
 from tqdm import tqdm
 
+import peft
+
+
 parser = argparse.ArgumentParser()
-parser.add_argument("input_path", type=str, help="The path to the input directory.")
-parser.add_argument("lora_path", type=str, help="The path to the LoRA directory.")
-parser.add_argument("output_path", type=str, help="The path to the output directory.")
-parser.add_argument("--no-gpu", action="store_true", help="Use CPU for merging.")
+parser.add_argument('input_path', type=str, help='The path to the input directory.')
+parser.add_argument('lora_path', type=str, help='The path to the LoRA directory.')
+parser.add_argument('output_path', type=str, help='The path to the output directory.')
+parser.add_argument('--no-gpu', action='store_true', help='Use CPU for merging.')
 args = parser.parse_args()
 
 input_path, lora_path, output_path = Path(args.input_path), Path(args.lora_path), Path(args.output_path)
@@ -25,7 +26,7 @@ os.makedirs(output_path, exist_ok=True)
 lora_config = peft.LoraConfig.from_json_file(lora_path / 'adapter_config.json')
 scale = lora_config['lora_alpha'] / lora_config['r']
 
-device = "cpu" if args.no_gpu else "cuda"
+device = 'cpu' if args.no_gpu else 'cuda'
 
 print('Loading LoRA model...')
 
@@ -38,6 +39,7 @@ if (lora_path / 'adapter_model.safetensors').exists():
             lora_state[key] = value.to('cuda')
 else:
     lora_state = torch.load(lora_path / 'adapter_model.bin', map_location=device)
+
 
 def find_lora_weights(key):
     lora_A = None
@@ -53,6 +55,7 @@ def find_lora_weights(key):
     assert not ((lora_A is None) ^ (lora_B is None))
     return lora_A, lora_B
 
+
 shards = []
 for shard in input_path.glob('model*.safetensors'):
     shards.append(shard)
@@ -64,10 +67,10 @@ for filepath in input_path.glob('*'):
     filepath = Path(filepath)
     if filepath.is_dir():
         continue
-    if filepath.suffix == ".gguf":
+    if filepath.suffix == '.gguf':
         # Skip unrelated stray quantizations
         continue
-    if filepath.suffix == ".safetensors":
+    if filepath.suffix == '.safetensors':
         # Consolidated, possibly
         continue
     print(f'copying {filepath.name} to output')
