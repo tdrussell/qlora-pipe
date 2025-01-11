@@ -20,6 +20,7 @@ tqdm
 triton
 hqq
 torch-optimi
+ruff
 
 # minimum Axolotl dependencies for what we use
 addict

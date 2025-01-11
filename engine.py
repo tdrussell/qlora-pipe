@@ -1,41 +1,55 @@
 from collections import deque
 
-import torch
-from torch import nn
-
 import deepspeed
-from deepspeed.accelerator import get_accelerator
+import torch
 from deepspeed import comm as dist
-from deepspeed.runtime.config import DeepSpeedConfig
-from deepspeed.runtime.pipe.engine import PipelineEngine, TRAIN_BATCH_TIMER, PIPE_SEND_OUTPUT_TIMER, PIPE_SEND_GRAD_TIMER, PIPE_RECV_INPUT_TIMER, PIPE_RECV_GRAD_TIMER, BATCH_INPUT_TIMER
-from deepspeed.runtime.pipe import schedule, p2p
-from deepspeed.runtime.utils import PartitionedTensor
-from deepspeed.runtime.activation_checkpointing import checkpointing as ds_checkpointing
-from deepspeed.runtime.pipe.module import PipelineModule
+from deepspeed.accelerator import get_accelerator
 from deepspeed.runtime import utils as ds_utils
-from deepspeed.runtime.pipe.module import LayerSpec
-from deepspeed.runtime.pipe.topology import ProcessTopology
-from deepspeed.runtime.pipe.schedule import (
-    PipeSchedule, OptimizerStep, ReduceGrads, ReduceTiedGrads, PipeInstruction, BufferOpInstruction, LoadMicroBatch, ForwardPass, BackwardPass,
-    SendActivation, RecvActivation, SendGrad, RecvGrad, _is_even, _is_odd,
+from deepspeed.runtime.activation_checkpointing import checkpointing as ds_checkpointing
+from deepspeed.runtime.config import DeepSpeedConfig
+from deepspeed.runtime.pipe import p2p, schedule
+from deepspeed.runtime.pipe.engine import (
+    BATCH_INPUT_TIMER,
+    PIPE_RECV_GRAD_TIMER,
+    PIPE_RECV_INPUT_TIMER,
+    PIPE_SEND_GRAD_TIMER,
+    PIPE_SEND_OUTPUT_TIMER,
+    TRAIN_BATCH_TIMER,
+    PipelineEngine,
 )
+from deepspeed.runtime.pipe.module import LayerSpec, PipelineModule
+from deepspeed.runtime.pipe.schedule import (
+    BackwardPass,
+    BufferOpInstruction,
+    ForwardPass,
+    OptimizerStep,
+    PipeInstruction,
+    PipeSchedule,
+    RecvActivation,
+    RecvGrad,
+    ReduceGrads,
+    ReduceTiedGrads,
+    SendActivation,
+    SendGrad,
+    _is_even,
+    _is_odd,
+)
+from deepspeed.runtime.pipe.topology import ProcessTopology
+from deepspeed.runtime.utils import PartitionedTensor
+from torch import nn
 
 from utils import eta_str, log
 
 
-def initialize(args=None,
-               model=None,
-               model_parameters=None,
-               optimizer=None,
-               lora_model=None,
-               config=None,
-               tokenizer=None):
-    assert model is not None, "deepspeed.initialize requires a model"
+def initialize(
+    args=None, model=None, model_parameters=None, optimizer=None, lora_model=None, config=None, tokenizer=None
+):
+    assert model is not None, 'deepspeed.initialize requires a model'
 
     dist_backend = get_accelerator().communication_backend_name()
     dist.init_distributed(dist_backend=dist_backend)
 
-    if hasattr(args, "deepspeed_config") and args.deepspeed_config is not None:
+    if hasattr(args, 'deepspeed_config') and args.deepspeed_config is not None:
         config = args.deepspeed_config
 
     mpu = model.mpu()
@@ -84,14 +98,12 @@ class CustomPipelineEngine(PipelineEngine):
             eos_token_ids.update(model_eos_token_ids)
         self.eos_token_ids = eos_token_ids
 
-
     def configure_rl(self, rl_config):
         self.rl_config = rl_config
 
-
     def train_batch(self):
         if not torch._C.is_grad_enabled():
-            raise RuntimeError(f'train_batch() requires gradients enabled. Use eval_batch() instead.')
+            raise RuntimeError('train_batch() requires gradients enabled. Use eval_batch() instead.')
 
         # sequence length may change between macro batches (but not between gradient accumulation steps)
         self.reset_activation_shape()
@@ -104,7 +116,9 @@ class CustomPipelineEngine(PipelineEngine):
         if self.rl_config.get('method', None) == 'dpo':
             sched = DPOTrainSchedule(micro_batches=self.micro_batches, stages=self.num_stages, stage_id=self.stage_id)
         else:
-            sched = schedule.TrainSchedule(micro_batches=self.micro_batches, stages=self.num_stages, stage_id=self.stage_id)
+            sched = schedule.TrainSchedule(
+                micro_batches=self.micro_batches, stages=self.num_stages, stage_id=self.stage_id
+            )
         self._exec_schedule(sched)
         agg_losses = self._aggregate_total_losses()
         # Actual training loss is always the first item.
@@ -122,30 +136,34 @@ class CustomPipelineEngine(PipelineEngine):
                     self.etas.popleft()
                 rolling_eta = sum(self.etas) / len(self.etas)
                 tput = self.train_batch_size() / iter_time
-                log(f'step: {self.global_steps:>5} / {self.total_steps:>5} '
+                log(
+                    f'step: {self.global_steps:>5} / {self.total_steps:>5} '
                     f'loss: {self.agg_train_loss:0.4f} '
                     f'iter time (s): {iter_time:0.3f} '
                     f'samples/sec: {tput:0.3f} '
-                    f'eta: {eta_str(rolling_eta)} ')
+                    f'eta: {eta_str(rolling_eta)} '
+                )
             else:
                 self.timers(TRAIN_BATCH_TIMER).elapsed(reset=True)
 
         # Monitoring
         if self.global_rank == 0 and self.monitor.enabled:
-            self.summary_events = [(f'Train/Samples/train_loss', self.agg_train_loss.mean().item(),
-                                    self.global_samples)]
+            self.summary_events = [
+                ('Train/Samples/train_loss', self.agg_train_loss.mean().item(), self.global_samples)
+            ]
             self.monitor.write_events(self.summary_events)
 
         if self.wall_clock_breakdown() and self.global_steps % self.steps_per_print() == 0:
-            self.timers.log([
-                PIPE_SEND_OUTPUT_TIMER,
-                PIPE_SEND_GRAD_TIMER,
-                PIPE_RECV_INPUT_TIMER,
-                PIPE_RECV_GRAD_TIMER,
-            ])
+            self.timers.log(
+                [
+                    PIPE_SEND_OUTPUT_TIMER,
+                    PIPE_SEND_GRAD_TIMER,
+                    PIPE_RECV_INPUT_TIMER,
+                    PIPE_RECV_GRAD_TIMER,
+                ]
+            )
 
         return agg_losses
-
 
     def eval_batch(self, data_iter):
         # sequence length may change between macro batches (but not between gradient accumulation steps)
@@ -160,9 +178,13 @@ class CustomPipelineEngine(PipelineEngine):
 
         # Do the work
         if self.rl_config.get('method', None) == 'dpo':
-            sched = DPOInferenceSchedule(micro_batches=self.micro_batches, stages=self.num_stages, stage_id=self.stage_id)
+            sched = DPOInferenceSchedule(
+                micro_batches=self.micro_batches, stages=self.num_stages, stage_id=self.stage_id
+            )
         else:
-            sched = schedule.InferenceSchedule(micro_batches=self.micro_batches, stages=self.num_stages, stage_id=self.stage_id)
+            sched = schedule.InferenceSchedule(
+                micro_batches=self.micro_batches, stages=self.num_stages, stage_id=self.stage_id
+            )
 
         # prevent dead-lock with multiple evals sequence
         dist.barrier()
@@ -174,14 +196,13 @@ class CustomPipelineEngine(PipelineEngine):
         agg_eval_losses = self._aggregate_total_losses()
 
         if self.global_rank == 0 and self.monitor.enabled:
-            self.summary_events = [(f'Train/Samples/eval_loss', agg_eval_losses[0].mean().item(), self.global_samples)]
+            self.summary_events = [('Train/Samples/eval_loss', agg_eval_losses[0].mean().item(), self.global_samples)]
             self.monitor.write_events(self.summary_events)
 
         # Restore the training iterator
         self.set_dataiterator(train_iterator)
 
         return agg_eval_losses
-
 
     def sample_batch(self, prompts, max_new_tokens=1e9):
         assert isinstance(prompts, (list, tuple))
@@ -211,7 +232,6 @@ class CustomPipelineEngine(PipelineEngine):
         self.module.set_sampling_mode(False)
         return text
 
-
     def _aggregate_total_losses(self):
         all_agg_outputs = []
         # gather each output for all the gradient accumulation steps
@@ -231,7 +251,9 @@ class CustomPipelineEngine(PipelineEngine):
                 if self.is_data_parallel:
                     # might be different sizes across DP ranks, so, gather all the sizes
                     sizes = [None] * self.grid.get_data_parallel_world_size()
-                    torch.distributed.all_gather_object(sizes, concat_outputs.size(), group=self.grid.get_data_parallel_group())
+                    torch.distributed.all_gather_object(
+                        sizes, concat_outputs.size(), group=self.grid.get_data_parallel_group()
+                    )
                     # once we know all the sizes we can gather the results across DP ranks
                     gather_result = [torch.zeros(size).to(self.device) for size in sizes]
                     dist.all_gather(gather_result, concat_outputs, group=self.grid.get_data_parallel_group())
@@ -244,7 +266,9 @@ class CustomPipelineEngine(PipelineEngine):
 
             # send the sizes, then broadcast to the PP ranks
             if self.is_pipe_parallel:
-                torch.distributed.broadcast_object_list([agg_sizes], src=self.global_rank, group=self.grid.get_pipe_parallel_group())
+                torch.distributed.broadcast_object_list(
+                    [agg_sizes], src=self.global_rank, group=self.grid.get_pipe_parallel_group()
+                )
                 for agg_output in all_agg_outputs:
                     dist.broadcast(tensor=agg_output, src=self.global_rank, group=self.grid.get_pipe_parallel_group())
         else:
@@ -261,7 +285,6 @@ class CustomPipelineEngine(PipelineEngine):
 
         return all_agg_outputs
 
-
     # We override this to handle the model returning a list of "losses", but only doing backprop on the first.
     def _exec_forward_pass(self, buffer_id):
         self.tput_timer.start()
@@ -274,14 +297,14 @@ class CustomPipelineEngine(PipelineEngine):
 
         # collect the partitioned input from the previous stage
         if self.is_pipe_partitioned and not self.is_first_stage():
-            part_input = PartitionedTensor.from_meta(meta=inputs[0],
-                                                     local_part=inputs[1],
-                                                     group=self.grid.get_slice_parallel_group())
+            part_input = PartitionedTensor.from_meta(
+                meta=inputs[0], local_part=inputs[1], group=self.grid.get_slice_parallel_group()
+            )
 
             inputs = (part_input.full(), *inputs[2:])
             inputs[0].requires_grad = True
             # skip mask
-            #inputs[1].requires_grad = True
+            # inputs[1].requires_grad = True
             part_input = None
             inputs = inputs[0] if len(inputs) == 1 else inputs
             self.pipe_buffers['inputs'][buffer_id] = inputs
@@ -299,13 +322,13 @@ class CustomPipelineEngine(PipelineEngine):
             if isinstance(outputs, tuple):
                 first_output = outputs[0]
                 # TODO: Improve pipe partitioning to pass multiple tensors that require grads
-                assert all([torch.is_tensor(elt) and elt.requires_grad is False for elt in outputs[1:]])
+                assert all(torch.is_tensor(elt) and elt.requires_grad is False for elt in outputs[1:])
                 outputs_tail = outputs[1:]
             elif torch.is_tensor(outputs):
                 first_output = outputs
                 outputs_tail = []
             else:
-                raise ValueError("expecting a tensor or a tuple of tensors")
+                raise ValueError('expecting a tensor or a tuple of tensors')
             part = PartitionedTensor(tensor=first_output, group=self.grid.get_slice_parallel_group())
             # Clear the large output data, but save the computation graph
             first_output.data = torch.zeros(1)
@@ -333,7 +356,6 @@ class CustomPipelineEngine(PipelineEngine):
                 self.loss = losses[0]
                 self.fwd_outputs.append([l.detach() for l in losses])
 
-
     def _exec_load_micro_batch_multiple_buffers(self, buffer_ids):
         if self.wall_clock_breakdown():
             self.timers(BATCH_INPUT_TIMER).start()
@@ -344,8 +366,10 @@ class CustomPipelineEngine(PipelineEngine):
             loaded = None
             if torch.is_tensor(batch[0]):
                 loaded = batch[0].clone().to(self.device).detach()
-                if self._config.pipeline['activation_checkpoint_interval'] > 0 and self._config.pipeline[
-                        'use_reentrant']:
+                if (
+                    self._config.pipeline['activation_checkpoint_interval'] > 0
+                    and self._config.pipeline['use_reentrant']
+                ):
                     loaded.requires_grad = loaded.is_floating_point()
             else:
                 assert isinstance(batch[0], (tuple, list))
@@ -354,8 +378,10 @@ class CustomPipelineEngine(PipelineEngine):
                 for x in batch[0]:
                     assert torch.is_tensor(x)
                     mine = x.clone().detach().to(self.device)
-                    if self._config.pipeline['activation_checkpoint_interval'] > 0 and self._config.pipeline[
-                            'use_reentrant']:
+                    if (
+                        self._config.pipeline['activation_checkpoint_interval'] > 0
+                        and self._config.pipeline['use_reentrant']
+                    ):
                         mine.requires_grad = mine.is_floating_point()
                     loaded.append(mine)
                 loaded = tuple(loaded)
@@ -382,7 +408,6 @@ class CustomPipelineEngine(PipelineEngine):
         if self.wall_clock_breakdown():
             self.timers(BATCH_INPUT_TIMER).stop()
 
-
     @torch.no_grad()
     def _exec_reference_logits_forward_pass(self, buffer_id):
         self.lora_model[0].disable_adapter_layers()
@@ -396,14 +421,16 @@ class CustomPipelineEngine(PipelineEngine):
         if self.is_pipe_partitioned and not self.is_first_stage():
             if self.pipe_partition_input_meta_cache is None:
                 self.pipe_partition_input_meta_cache = inputs[0].to('cpu')
-            part_input = PartitionedTensor.from_meta(meta=self.pipe_partition_input_meta_cache,
-                                                     local_part=inputs[1],
-                                                     group=self.grid.get_slice_parallel_group())
+            part_input = PartitionedTensor.from_meta(
+                meta=self.pipe_partition_input_meta_cache,
+                local_part=inputs[1],
+                group=self.grid.get_slice_parallel_group(),
+            )
 
             inputs = (part_input.full(), *inputs[2:])
             inputs[0].requires_grad = True
             # skip mask
-            #inputs[1].requires_grad = True
+            # inputs[1].requires_grad = True
             part_input = None
             inputs = inputs[0] if len(inputs) == 1 else inputs
             self.pipe_buffers['inputs'][buffer_id] = inputs
@@ -421,13 +448,13 @@ class CustomPipelineEngine(PipelineEngine):
             if isinstance(outputs, tuple):
                 first_output = outputs[0]
                 # TODO: Improve pipe partitioning to pass multiple tensors that require grads
-                assert all([torch.is_tensor(elt) and elt.requires_grad is False for elt in outputs[1:]])
+                assert all(torch.is_tensor(elt) and elt.requires_grad is False for elt in outputs[1:])
                 outputs_tail = outputs[1:]
             elif torch.is_tensor(outputs):
                 first_output = outputs
                 outputs_tail = []
             else:
-                raise ValueError("expecting a tensor or a tuple of tensors")
+                raise ValueError('expecting a tensor or a tuple of tensors')
             part = PartitionedTensor(tensor=first_output, group=self.grid.get_slice_parallel_group())
             # Clear the large output data, but save the computation graph
             first_output.data = torch.zeros(1, device=first_output.data.device)
@@ -439,7 +466,6 @@ class CustomPipelineEngine(PipelineEngine):
         self.pipe_buffers['outputs'][buffer_id] = outputs
         self.lora_model[0].enable_adapter_layers()
         self.module.set_dpo_reference_mode(False)
-
 
     def _exec_send_micro_batch_id(self, send_micro_batch_id):
         assert isinstance(send_micro_batch_id, int)
@@ -459,11 +485,10 @@ class CustomPipelineEngine(PipelineEngine):
                 p2p.send(send_micro_batch_id, self.next_stage)
         # last stage sends to first stage
         if self.is_first_stage():
-            p2p.recv(recv_micro_batch_id, self.num_stages-1)
+            p2p.recv(recv_micro_batch_id, self.num_stages - 1)
         if self.is_last_stage():
             p2p.send(send_micro_batch_id, 0)
         return recv_micro_batch_id.item()
-
 
     def _exec_load_micro_batch_for_sampling(self, buffer_id, inputs):
         loaded = (
@@ -474,7 +499,6 @@ class CustomPipelineEngine(PipelineEngine):
         )
         loaded = tuple(x.clone().detach().to(self.device) for x in loaded)
         self.pipe_buffers['inputs'][buffer_id] = loaded
-
 
     @torch.no_grad()
     def _exec_sampling_forward_pass(self, buffer_id):
@@ -487,14 +511,16 @@ class CustomPipelineEngine(PipelineEngine):
         if self.is_pipe_partitioned and not self.is_first_stage():
             if self.pipe_partition_input_meta_cache is None:
                 self.pipe_partition_input_meta_cache = inputs[0].to('cpu')
-            part_input = PartitionedTensor.from_meta(meta=self.pipe_partition_input_meta_cache,
-                                                     local_part=inputs[1],
-                                                     group=self.grid.get_slice_parallel_group())
+            part_input = PartitionedTensor.from_meta(
+                meta=self.pipe_partition_input_meta_cache,
+                local_part=inputs[1],
+                group=self.grid.get_slice_parallel_group(),
+            )
 
             inputs = (part_input.full(), *inputs[2:])
             inputs[0].requires_grad = True
             # skip mask
-            #inputs[1].requires_grad = True
+            # inputs[1].requires_grad = True
             part_input = None
             inputs = inputs[0] if len(inputs) == 1 else inputs
             self.pipe_buffers['inputs'][buffer_id] = inputs
@@ -512,13 +538,13 @@ class CustomPipelineEngine(PipelineEngine):
             if isinstance(outputs, tuple):
                 first_output = outputs[0]
                 # TODO: Improve pipe partitioning to pass multiple tensors that require grads
-                assert all([torch.is_tensor(elt) and elt.requires_grad is False for elt in outputs[1:]])
+                assert all(torch.is_tensor(elt) and elt.requires_grad is False for elt in outputs[1:])
                 outputs_tail = outputs[1:]
             elif torch.is_tensor(outputs):
                 first_output = outputs
                 outputs_tail = []
             else:
-                raise ValueError("expecting a tensor or a tuple of tensors")
+                raise ValueError('expecting a tensor or a tuple of tensors')
             part = PartitionedTensor(tensor=first_output, group=self.grid.get_slice_parallel_group())
             # Clear the large output data, but save the computation graph
             first_output.data = torch.zeros(1, device=first_output.data.device)
@@ -529,20 +555,16 @@ class CustomPipelineEngine(PipelineEngine):
 
         self.pipe_buffers['outputs'][buffer_id] = outputs
 
-
     def _sample_from_logits(self, buffer_id):
         logits = self.pipe_buffers['outputs'][buffer_id]
         input_ids = torch.argmax(logits, dim=-1)
         return input_ids
 
-
     def _valid_stage(self, stage_id):
         return 0 <= stage_id < self.num_stages
 
-
     def _valid_micro_batch(self, micro_batch_id):
         return 0 <= micro_batch_id < self.micro_batches
-
 
     def _exec_sampling_schedule(self, examples, max_new_tokens=1e9):
         assert isinstance(examples, list) and len(examples) > 0
@@ -551,7 +573,7 @@ class CustomPipelineEngine(PipelineEngine):
         self.fwd_outputs = []
         eos_token_ids = torch.tensor(list(self.eos_token_ids))
         for example in examples:
-            example['done'] = torch.tensor([False]*example['input_ids'].size(0))
+            example['done'] = torch.tensor([False] * example['input_ids'].size(0))
             example['num_new_tokens'] = 0
         num_batches_done = 0
         num_batches = len(examples)
@@ -559,11 +581,16 @@ class CustomPipelineEngine(PipelineEngine):
         if self.is_first_stage():
             queue = deque()
             for i, example in enumerate(examples):
-                queue.append((i, {
-                    'input_ids': example['input_ids'],
-                    'attention_mask': example['attention_mask'],
-                    'micro_batch_id': torch.tensor(i),
-                }))
+                queue.append(
+                    (
+                        i,
+                        {
+                            'input_ids': example['input_ids'],
+                            'attention_mask': example['attention_mask'],
+                            'micro_batch_id': torch.tensor(i),
+                        },
+                    )
+                )
 
         step_id = 0
         prev_micro_batch_id = -1
@@ -584,8 +611,8 @@ class CustomPipelineEngine(PipelineEngine):
             # If last stage did a forward pass, send the sampled input_ids to the first stage.
             if self.is_first_stage() and self._valid_micro_batch(micro_batch_id):
                 if self.num_stages > 1:
-                    input_ids = torch.tensor([[-1]*batch_size])
-                    p2p.recv(input_ids, self.num_stages-1)
+                    input_ids = torch.tensor([[-1] * batch_size])
+                    p2p.recv(input_ids, self.num_stages - 1)
                 assert input_ids.size(-1) == 1
                 input_ids = input_ids.to('cpu')
                 prev_done = examples[micro_batch_id]['done']
@@ -599,7 +626,9 @@ class CustomPipelineEngine(PipelineEngine):
                 attention_mask_extension = torch.where(prev_done_reshaped, 0, 1)
                 input_ids = torch.cat([examples[micro_batch_id]['input_ids'], input_ids], dim=-1)
                 examples[micro_batch_id]['input_ids'] = input_ids
-                attention_mask = torch.cat([examples[micro_batch_id]['attention_mask'], attention_mask_extension], dim=-1)
+                attention_mask = torch.cat(
+                    [examples[micro_batch_id]['attention_mask'], attention_mask_extension], dim=-1
+                )
                 examples[micro_batch_id]['attention_mask'] = attention_mask
                 examples[micro_batch_id]['num_new_tokens'] += 1
                 if examples[micro_batch_id]['num_new_tokens'] >= max_new_tokens:
@@ -608,7 +637,16 @@ class CustomPipelineEngine(PipelineEngine):
                     num_batches_done += 1
                 else:
                     # Model needs full attention mask, but only most recent sampled input_id.
-                    queue.append((micro_batch_id, {'input_ids': input_ids[..., -1:], 'attention_mask': attention_mask, 'micro_batch_id': torch.tensor(micro_batch_id)}))
+                    queue.append(
+                        (
+                            micro_batch_id,
+                            {
+                                'input_ids': input_ids[..., -1:],
+                                'attention_mask': attention_mask,
+                                'micro_batch_id': torch.tensor(micro_batch_id),
+                            },
+                        )
+                    )
             if self.is_last_stage() and self._valid_micro_batch(prev_micro_batch_id) and self.num_stages > 1:
                 p2p.send(input_ids, 0)
 
@@ -647,7 +685,6 @@ class CustomPipelineEngine(PipelineEngine):
             del example['num_new_tokens']
         return examples
 
-
     # make our forward pass method apply
     PipelineEngine._INSTRUCTION_MAP[schedule.ForwardPass] = _exec_forward_pass
     PipelineEngine._INSTRUCTION_MAP[LoadMicroBatchMultipleBuffers] = _exec_load_micro_batch_multiple_buffers
@@ -660,6 +697,7 @@ class ColumnMajorParallelTopology(ProcessTopology):
     - Sends high-volume "per token" hidden states over PCIe/NVLink.
     - Sends lower-volume "per step" LoRA gradient reductions over Ethernet/InfiniBand.
     """
+
     def __init__(self, num_pp, num_dp):
         # Swap the axes and dims to change the rank mapping
         super().__init__(axes=['data', 'pipe'], dims=[num_dp, num_pp])
@@ -674,7 +712,9 @@ class CustomPipelineModule(PipelineModule):
             world_size = dist.get_world_size()
             num_stages = kwargs.get('num_stages')
             if num_stages > 1 and world_size > 1:
-                assert world_size % num_stages == 0, f"world_size ({world_size}) must be divisible by num_stages ({num_stages})"
+                assert world_size % num_stages == 0, (
+                    f'world_size ({world_size}) must be divisible by num_stages ({num_stages})'
+                )
                 num_dp = world_size // num_stages
                 kwargs['topology'] = ColumnMajorParallelTopology(num_pp=num_stages, num_dp=num_dp)
         super().__init__(layers, **kwargs)
@@ -737,9 +777,9 @@ class CustomPipelineModule(PipelineModule):
                             name = layer.__name__
                         except AttributeError:
                             pass
-                    logstr = f'    {idx+start:2d}: {name}'
+                    logstr = f'    {idx + start:2d}: {name}'
                     if estimated_sizes:
-                        es = estimated_sizes[idx+start]
+                        es = estimated_sizes[idx + start]
                         logstr += f', estimated size: {es}'
                     print(logstr)
             if self.loss_fn:

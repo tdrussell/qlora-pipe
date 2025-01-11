@@ -2,9 +2,9 @@ import math
 
 import torch
 import torch.nn.functional as F
-from torch import nn
 import transformers
 from deepspeed.runtime.pipe import module as ds_pipe_module
+from torch import nn
 
 from kernels.cross_entropy_loss import Fast_CrossEntropyLoss
 
@@ -62,7 +62,7 @@ def entropy_fn(logits):
 
 
 def top_k_accuracy(logits, labels, k_list, ignore_index=-100):
-    keep = (labels != ignore_index)
+    keep = labels != ignore_index
     labels = labels[keep].view(-1, 1)
     max_k = max(k_list)
     _, top_k_predictions = torch.topk(logits, max_k, dim=-1, sorted=True)
@@ -90,16 +90,16 @@ class LayerSpec(ds_pipe_module.LayerSpec):
 # Would save VRAM, but some metrics could no longer be computed (e.g. entropy, accuracies).
 class OutputLayer(nn.Module):
     def __init__(
-            self,
-            pipeline_model,
-            loader_util,
-            lm_head,
-            logit_scale=1.0,
-            loss_type='cross_entropy_loss',
-            focal_loss_gamma=0,
-            tie_weights=None,
-            logit_softcapping=None,
-        ):
+        self,
+        pipeline_model,
+        loader_util,
+        lm_head,
+        logit_scale=1.0,
+        loss_type='cross_entropy_loss',
+        focal_loss_gamma=0,
+        tie_weights=None,
+        logit_softcapping=None,
+    ):
         super().__init__()
         # Assign list to prevent registering the nn.Module
         self.pipeline_model = [pipeline_model]
@@ -141,7 +141,7 @@ class OutputLayer(nn.Module):
         vocab_size = logits.size(-1)
         flat_logits = logits.view(-1, vocab_size)
         flat_labels = labels.view(-1)
-        flat_loss_mask = (flat_labels >= 0)
+        flat_loss_mask = flat_labels >= 0
 
         cross_entropy_loss = Fast_CrossEntropyLoss.apply(flat_logits, flat_labels)
 
@@ -153,7 +153,7 @@ class OutputLayer(nn.Module):
             cross_entropy_loss = cross_entropy_loss[flat_loss_mask]
             # See https://arxiv.org/abs/1708.02002 (Section 3)
             p = torch.exp(-cross_entropy_loss)
-            loss_unreduced = (1-p)**self.focal_loss_gamma * cross_entropy_loss
+            loss_unreduced = (1 - p) ** self.focal_loss_gamma * cross_entropy_loss
         elif self.loss_type == 'focal_loss_star':
             cross_entropy_loss = cross_entropy_loss[flat_loss_mask]
             # See https://arxiv.org/abs/1708.02002 (Appendix A/B)
@@ -166,7 +166,7 @@ class OutputLayer(nn.Module):
             # See "Rethinking Calibration of Deep Neural Networks: Do Not Be Afraid of Overconfidence" (Section 5.2)
             # NOTE: The alternative of p^gamma (instead of (1+p)^gamma) might be useful for gradient ascent...
             p = torch.exp(-cross_entropy_loss)
-            loss_unreduced = (1+p)**self.focal_loss_gamma * cross_entropy_loss
+            loss_unreduced = (1 + p) ** self.focal_loss_gamma * cross_entropy_loss
         elif self.loss_type == 'exponentiated_cross_entropy_loss':
             cross_entropy_loss = cross_entropy_loss[flat_loss_mask]
             # See "Gradient as a Foundation for Building a Loss Function" (Section III.B)
@@ -175,7 +175,7 @@ class OutputLayer(nn.Module):
         elif self.loss_type == 'dpo':
             rl_config = self.pipeline_model[0].train_config['rl']
             cross_entropy_loss = cross_entropy_loss.view_as(labels)  # unflatten
-            loss_mask = (labels >= 0)
+            loss_mask = labels >= 0
             logps = -(cross_entropy_loss * loss_mask).sum(-1)
             half = cross_entropy_loss.size(0) // 2
             chosen_logps = logps[:half]
@@ -184,14 +184,14 @@ class OutputLayer(nn.Module):
             if self.pipeline_model[0].dpo_reference_mode:
                 self.reference_chosen_logps = chosen_logps.detach()
                 self.reference_rejected_logps = rejected_logps.detach()
-                return torch.tensor(0., device=logits.device)
+                return torch.tensor(0.0, device=logits.device)
 
             # log the language modeling loss metrics on the chosen completion
             cross_entropy_loss = cross_entropy_loss[:half].flatten()[loss_mask[:half].flatten()]
             loss_unreduced = cross_entropy_loss
             flat_logits = logits[:half].view(-1, vocab_size)
             flat_labels = labels[:half].view(-1)
-            flat_loss_mask = (flat_labels >= 0)
+            flat_loss_mask = flat_labels >= 0
 
             policy_chosen_logps = chosen_logps
             policy_rejected_logps = rejected_logps
@@ -221,7 +221,16 @@ class OutputLayer(nn.Module):
             # Normal language modeling loss types (e.g. not DPO)
             loss = loss_unreduced.mean()
         loss_unreduced = loss_unreduced.detach()
-        return loss, loss_unreduced, hidden_state_norms, entropy, normalised_entropy, log_likelihood, mcfaddens_pseudo_r2, *accuracies
+        return (
+            loss,
+            loss_unreduced,
+            hidden_state_norms,
+            entropy,
+            normalised_entropy,
+            log_likelihood,
+            mcfaddens_pseudo_r2,
+            *accuracies,
+        )
 
 
 def load_balancing_loss_func(gate_logits: torch.Tensor, num_experts: torch.Tensor = None, top_k=2) -> float:
@@ -229,18 +238,29 @@ def load_balancing_loss_func(gate_logits: torch.Tensor, num_experts: torch.Tenso
         compute_device = gate_logits[0].device
         stacked_gate_logits = torch.stack([layer_gate.to(compute_device) for layer_gate in gate_logits], dim=0)
 
-    routing_weights = torch.nn.functional.softmax(stacked_gate_logits, dim=-1) # [num_layers, num_tokens, num_experts]
-    _, selected_experts = torch.topk(routing_weights, top_k, dim=-1) # [num_layers, num_tokens, top_k]
-    expert_mask = torch.nn.functional.one_hot(selected_experts, num_experts) # [num_layers, num_tokens, top_k, num_experts]
+    routing_weights = torch.nn.functional.softmax(stacked_gate_logits, dim=-1)  # [num_layers, num_tokens, num_experts]
+    _, selected_experts = torch.topk(routing_weights, top_k, dim=-1)  # [num_layers, num_tokens, top_k]
+    expert_mask = torch.nn.functional.one_hot(
+        selected_experts, num_experts
+    )  # [num_layers, num_tokens, top_k, num_experts]
     # For a given token, determine if it was routed to a given expert. Think of this as a collection of top_k-hot vectors.
-    expert_mask = torch.max(expert_mask, dim=-2).values.float() # [num_layers, num_tokens, num_experts]
-    tokens_per_layer_and_expert = torch.mean(expert_mask, dim=-2) # [num_layers, num_experts]
-    router_prob_per_layer_and_expert = torch.mean(routing_weights, dim=-2) # [num_layers, num_experts]
+    expert_mask = torch.max(expert_mask, dim=-2).values.float()  # [num_layers, num_tokens, num_experts]
+    tokens_per_layer_and_expert = torch.mean(expert_mask, dim=-2)  # [num_layers, num_experts]
+    router_prob_per_layer_and_expert = torch.mean(routing_weights, dim=-2)  # [num_layers, num_experts]
     return torch.mean(tokens_per_layer_and_expert * router_prob_per_layer_and_expert) * num_experts**2
 
 
 class MixtralOutputLayer(OutputLayer):
-    def __init__(self, pipeline_model, loader_util, lm_head, load_balancing_loss_coef, num_experts, num_experts_per_tok, **kwargs):
+    def __init__(
+        self,
+        pipeline_model,
+        loader_util,
+        lm_head,
+        load_balancing_loss_coef,
+        num_experts,
+        num_experts_per_tok,
+        **kwargs,
+    ):
         super().__init__(pipeline_model, loader_util, lm_head, **kwargs)
         self.load_balancing_loss_coef = load_balancing_loss_coef
         self.num_experts = num_experts
@@ -270,7 +290,7 @@ class InputLayer(nn.Module):
         self.embed_tokens = model.model.embed_tokens
         if self.model.model.config.model_type == 'llama':
             self.rotary_emb = model.model.rotary_emb
-        self.embedding_on_cpu = (not self.model.train_config['full_fine_tune'])
+        self.embedding_on_cpu = not self.model.train_config['full_fine_tune']
         self.model.loader_util.load_state_dict_into_module(self)
 
     @property
@@ -457,9 +477,9 @@ class MixtralDecoderLayerPipe(LlamaDecoderLayerPipe):
             kwargs['past_key_value'] = self.pipeline_model[0].cache
         hidden_states, router_logits = self.orig(hidden_states, output_router_logits=True, **kwargs)
         # TODO: fix unsloth gradient checkpointing when we return router logits
-        #router_logits = router_logits.to(torch.float32)
-        #router_logits = input_router_logits + (router_logits,)
-        #result = (hidden_states, input_attention_mask, position_ids, cos, sin, labels, *router_logits)
+        # router_logits = router_logits.to(torch.float32)
+        # router_logits = input_router_logits + (router_logits,)
+        # result = (hidden_states, input_attention_mask, position_ids, cos, sin, labels, *router_logits)
         result = (hidden_states, input_attention_mask, position_ids, cos, sin, labels)
         if self.mlp_offloaded_to_cpu and not torch.is_grad_enabled():
             self.move_mlp_to_cpu()
@@ -474,4 +494,6 @@ class MixtralDecoderLayerPipe(LlamaDecoderLayerPipe):
         self.mlp_offloaded_to_cpu = True
 
     def move_mlp_to_device(self, device):
-        self.orig_data = move_experts_to_device(self.orig.block_sparse_moe.experts, device, self.num_experts_to_offload)
+        self.orig_data = move_experts_to_device(
+            self.orig.block_sparse_moe.experts, device, self.num_experts_to_offload
+        )
