@@ -12,22 +12,21 @@ from train import load_pipeline_model_with_lora
 from utils import DTYPE_MAP
 
 
-PROMPT_FORMAT = '''<|start_header_id|>user<|end_header_id|>
+PROMPT_FORMAT = """<|start_header_id|>user<|end_header_id|>
 
 {}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
 
-'''
+"""
 
 PROMPTS = [
-    "Where is Popeye Village located?",
-    "What is the name of Sweden in Swedish?",
+    'Where is Popeye Village located?',
+    'What is the name of Sweden in Swedish?',
 ]
 
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--config', help='Path to TOML configuration file.')
-parser.add_argument('--local_rank', type=int, default=-1,
-                    help='local rank passed from distributed launcher')
+parser.add_argument('--local_rank', type=int, default=-1, help='local rank passed from distributed launcher')
 parser = deepspeed.add_config_arguments(parser)
 args = parser.parse_args()
 
@@ -54,13 +53,13 @@ if __name__ == '__main__':
         local_files_only=True,
         model_max_length=int(1e30),
         padding_side='left',
-
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     # Ugly hack so we can move quantized models from GPU to CPU, and back to GPU again without triggering quantization a second time.
     bnb_cuda_old = bitsandbytes.nn.modules.Params4bit.cuda
+
     def bnb_cuda_hijack(self, device):
         if getattr(self, 'already_quantized', False):
             self.data = self.data.to(device)
@@ -68,6 +67,7 @@ if __name__ == '__main__':
             return self
         self.already_quantized = True
         return bnb_cuda_old(self, device)
+
     bitsandbytes.nn.modules.Params4bit.cuda = bnb_cuda_hijack
 
     # TODO: make it work with dynamic_shape=False for better performance.
@@ -84,7 +84,7 @@ if __name__ == '__main__':
     model_engine.communication_data_type = weight_dtype
 
     prompts = [PROMPT_FORMAT.format(prompt) for prompt in PROMPTS]
-    #prompts = [[PROMPT_FORMAT.format(prompt) for prompt in PROMPTS]]
+    # prompts = [[PROMPT_FORMAT.format(prompt) for prompt in PROMPTS]]
     for text in model_engine.sample_batch(prompts):
         print(text)
-        print('-'*80)
+        print('-' * 80)

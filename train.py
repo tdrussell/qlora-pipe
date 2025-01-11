@@ -31,10 +31,14 @@ from utils import DTYPE_MAP, is_main_process
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--config', help='Path to TOML configuration file.')
-parser.add_argument('--local_rank', type=int, default=-1,
-                    help='local rank passed from distributed launcher')
+parser.add_argument('--local_rank', type=int, default=-1, help='local rank passed from distributed launcher')
 parser.add_argument('--debug_dataset', type=int, help='print out this many training examples and then quit')
-parser.add_argument('--resume_from_checkpoint', action='store_true', default=None, help='resume training from the most recent checkpoint')
+parser.add_argument(
+    '--resume_from_checkpoint',
+    action='store_true',
+    default=None,
+    help='resume training from the most recent checkpoint',
+)
 parser.add_argument('--no_quantiles', action='store_true', help='suppress output of quantile metrics')
 parser = deepspeed.add_config_arguments(parser)
 args = parser.parse_args()
@@ -69,12 +73,14 @@ def write_metrics(tb_writer, prefix, metrics, step):
 
     if len(metrics) > 1:
         losses = metrics[1].view(-1)
-        positive_losses = (losses > 0)
-        tb_writer.add_histogram(f'{prefix}/log_loss_hist',  torch.log(losses[positive_losses]), step)
+        positive_losses = losses > 0
+        tb_writer.add_histogram(f'{prefix}/log_loss_hist', torch.log(losses[positive_losses]), step)
         if not args.no_quantiles:
             sorted_losses, sorted_losses_idx = torch.sort(losses)
-            quantiles = torch.tensor([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.96, 0.97, 0.98, 0.99, 0.999], dtype=torch.float32).to(losses.device)
-            quantiles_idx = [int(len(losses)*quantile) for quantile in quantiles]
+            quantiles = torch.tensor(
+                [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.96, 0.97, 0.98, 0.99, 0.999], dtype=torch.float32
+            ).to(losses.device)
+            quantiles_idx = [int(len(losses) * quantile) for quantile in quantiles]
             loss_quantiles = [sorted_losses[i] for i in quantiles_idx]
             for quantile, value in zip(quantiles, loss_quantiles):
                 tb_writer.add_scalar(f'{prefix}/loss_quantile_{quantile:.3f}', value, step)
@@ -83,7 +89,7 @@ def write_metrics(tb_writer, prefix, metrics, step):
         hidden_norm_avg = metrics[2].mean().item()
         tb_writer.add_scalar(f'{prefix}/hidden_norm_avg', hidden_norm_avg, step)
         hidden_state_norms = metrics[2].view(-1)
-        tb_writer.add_histogram(f'{prefix}/hidden_norm_hist',  hidden_state_norms, step)
+        tb_writer.add_histogram(f'{prefix}/hidden_norm_hist', hidden_state_norms, step)
 
     if len(metrics) > 3:
         entropy = metrics[3].view(-1)
@@ -165,7 +171,9 @@ def evaluate(model_engine, eval_dataloaders, tb_writer, step, eval_gradient_accu
     start = time.time()
     loss = []
     for name, eval_dataloader in eval_dataloaders.items():
-        loss_or_none = evaluate_single(model_engine, name, eval_dataloader, tb_writer, step, eval_gradient_accumulation_steps)
+        loss_or_none = evaluate_single(
+            model_engine, name, eval_dataloader, tb_writer, step, eval_gradient_accumulation_steps
+        )
         if loss_or_none is not None:
             loss.append(loss_or_none)
     duration = time.time() - start
@@ -226,7 +234,7 @@ def parse_layers_to_transform(spec):
     result = []
     for part in parts:
         start, stop = part.split(':')
-        result.extend(range(int(start), int(stop)+1))
+        result.extend(range(int(start), int(stop) + 1))
     return result
 
 
@@ -261,7 +269,9 @@ def load_pipeline_model_with_lora(config, model_type, dynamic_shape=False):
         elif hqq_quant_config := config['quantization'].get('hqq', None):
             quantization_config = hqq_utils.CustomHQQConfig(**hqq_quant_config)
             # Use ATEN backend if possible, else PYTORCH. PYTORCH_COMPILE was only a tiny bit faster, and requires triton nightly.
-            hqq_quantize.HQQLinear.set_backend(hqq_quantize.HQQBackend.ATEN if quantization_config.use_aten() else hqq_quantize.HQQBackend.PYTORCH)
+            hqq_quantize.HQQLinear.set_backend(
+                hqq_quantize.HQQBackend.ATEN if quantization_config.use_aten() else hqq_quantize.HQQBackend.PYTORCH
+            )
         else:
             raise NotImplementedError('Invalid quantization config')
         if is_main_process():
@@ -336,7 +346,9 @@ def load_pipeline_model_with_lora(config, model_type, dynamic_shape=False):
                     p.requires_grad = False
                     print(f'not training {name} because it is not present in target_modules')
     else:
-        layers_to_transform = parse_layers_to_transform(config['layers_to_transform']) if 'layers_to_transform' in config else None
+        layers_to_transform = (
+            parse_layers_to_transform(config['layers_to_transform']) if 'layers_to_transform' in config else None
+        )
         lora_config = LoraConfig(
             r=config['lora_rank'],
             lora_alpha=config['lora_alpha'],
@@ -346,9 +358,8 @@ def load_pipeline_model_with_lora(config, model_type, dynamic_shape=False):
             layers_to_transform=layers_to_transform,
             bias='none',
             task_type='CAUSAL_LM',
-            use_dora=config.get('use_dora', False)
+            use_dora=config.get('use_dora', False),
         )
-
 
         lora_model = get_peft_model(model, lora_config)
         # If the underlying weights are floats, the lora weights have already been
@@ -371,7 +382,7 @@ if __name__ == '__main__':
         config = toml.load(f)
     set_config_defaults(config)
 
-    if hasattr(args, "deepspeed_config") and args.deepspeed_config is not None:
+    if hasattr(args, 'deepspeed_config') and args.deepspeed_config is not None:
         # engine.initialize() will load deepspeed config from args
         ds_config = None
     else:
@@ -384,8 +395,10 @@ if __name__ == '__main__':
         }
 
     resume_from_checkpoint = (
-        args.resume_from_checkpoint if args.resume_from_checkpoint is not None
-        else config['resume_from_checkpoint'] if 'resume_from_checkpoint' in config
+        args.resume_from_checkpoint
+        if args.resume_from_checkpoint is not None
+        else config['resume_from_checkpoint']
+        if 'resume_from_checkpoint' in config
         else False
     )
 
@@ -396,7 +409,9 @@ if __name__ == '__main__':
         model_type = model_config.get('model_type', 'llama')
 
     # Pad on left to support training techniques that involve sampling from the model.
-    tokenizer = transformers.AutoTokenizer.from_pretrained(config['model'], local_files_only=True, model_max_length=int(1e30), padding_side='left')
+    tokenizer = transformers.AutoTokenizer.from_pretrained(
+        config['model'], local_files_only=True, model_max_length=int(1e30), padding_side='left'
+    )
     # TODO: do we want to do this with cohere models? By default the EOS token is <|END_OF_TURN_TOKEN|>
     # if model_type == 'cohere':
     #     tokenizer.eos_token = '<EOS_TOKEN>'
@@ -425,20 +440,20 @@ if __name__ == '__main__':
                     print(item['rejected_attention_mask'][:1000])
                     print('rejected_labels:')
                     print(item['rejected_labels'][:1000])
-                print('-'*80)
-                if i >= args.debug_dataset-1:
+                print('-' * 80)
+                if i >= args.debug_dataset - 1:
                     break
         quit()
 
     # for testing
-    #train_data = train_data.select(list(range(100)))
+    # train_data = train_data.select(list(range(100)))
 
     # if this is a new run, create a new dir for it
     if not resume_from_checkpoint and is_main_process():
         run_dir = os.path.join(config['output_dir'], datetime.now(timezone.utc).strftime('%Y%m%d_%H-%M-%S'))
         os.makedirs(run_dir, exist_ok=True)
         shutil.copy(args.config, run_dir)
-        if hasattr(args, "deepspeed_config") and args.deepspeed_config is not None:
+        if hasattr(args, 'deepspeed_config') and args.deepspeed_config is not None:
             shutil.copy(args.deepspeed_config, run_dir)
     # wait for all processes then get the most recent dir (may have just been created)
     deepspeed.comm.barrier()
@@ -446,6 +461,7 @@ if __name__ == '__main__':
 
     # Ugly hack so we can move quantized models from GPU to CPU, and back to GPU again without triggering quantization a second time.
     bnb_cuda_old = bitsandbytes.nn.modules.Params4bit.cuda
+
     def bnb_cuda_hijack(self, device):
         if getattr(self, 'already_quantized', False):
             self.data = self.data.to(device)
@@ -453,6 +469,7 @@ if __name__ == '__main__':
             return self
         self.already_quantized = True
         return bnb_cuda_old(self, device)
+
     bitsandbytes.nn.modules.Params4bit.cuda = bnb_cuda_hijack
 
     pipeline_model, lora_model, lora_config = load_pipeline_model_with_lora(config, model_type)
@@ -460,15 +477,16 @@ if __name__ == '__main__':
     parameters_to_train = [p for p in pipeline_model.parameters() if p.requires_grad]
 
     optim_config = config['optimizer']
+
     def get_optimizer(model_parameters):
         lr = optim_config['lr']
         optim_type = optim_config['type'].lower()
         optimizer_kwargs = {
-            "params": model_parameters,
-            "lr": lr,
-            "betas": (optim_config.get('beta1', 0.9), optim_config.get('beta2', 0.99)),
-            "weight_decay": optim_config.get('weight_decay', 0.01),
-            "eps": optim_config.get('eps', 1e-6)
+            'params': model_parameters,
+            'lr': lr,
+            'betas': (optim_config.get('beta1', 0.9), optim_config.get('beta2', 0.99)),
+            'weight_decay': optim_config.get('weight_decay', 0.01),
+            'eps': optim_config.get('eps', 1e-6),
         }
         if optim_type == 'adamw':
             optimizer_cls = deepspeed.ops.adam.FusedAdam
@@ -476,6 +494,7 @@ if __name__ == '__main__':
             optimizer_cls = bitsandbytes.optim.AdamW8bit
         elif optim_type == 'adamw_kahan':
             import optimi
+
             optimizer_cls = optimi.AdamW
             optimizer_kwargs['kahan_sum'] = optim_config.get('kahan_sum', True)
         else:
@@ -489,7 +508,7 @@ if __name__ == '__main__':
                 model=pipeline_model,
                 optimizer_cls=optimizer_cls,
                 loraplus_lr_ratio=loraplus_lr_ratio,
-                **optimizer_kwargs
+                **optimizer_kwargs,
             )
         return optimizer_cls(**optimizer_kwargs)
 
@@ -549,10 +568,14 @@ if __name__ == '__main__':
         # Expect <=15% of our time spent evaluating vs training
         fraction_evaling = relative_eval_time / (relative_eval_time + relative_train_time)
         print()
-        print(f'eval_data_length: {eval_data_length}, eval_steps: {config["eval_steps"]}; evals per epoch: {evals_per_epoch}. '
-              f'We will be spending approximately {fraction_evaling*100:.2f}% of our time evaluating.')
+        print(
+            f'eval_data_length: {eval_data_length}, eval_steps: {config["eval_steps"]}; evals per epoch: {evals_per_epoch}. '
+            f'We will be spending approximately {fraction_evaling * 100:.2f}% of our time evaluating.'
+        )
         if fraction_evaling > 0.15:
-            print('WARNING: eval dataset is unusually large compared to eval_steps. We will spend a lot of time evaluating. Lowering eval_size and/or bumping eval_steps is recommended.')
+            print(
+                'WARNING: eval dataset is unusually large compared to eval_steps. We will spend a lot of time evaluating. Lowering eval_size and/or bumping eval_steps is recommended.'
+            )
         print()
 
     # handle Deepspeed optimizer wrapper (e.g. BF16_Optimizer)
@@ -569,11 +592,11 @@ if __name__ == '__main__':
         total_steps = steps_per_epoch * config['epochs']
         total_steps -= warmup_steps
         lr_scheduler_kwargs = {
-            "optimizer": optimizer,
-            "T_max": total_steps,
+            'optimizer': optimizer,
+            'T_max': total_steps,
         }
         if 'lr_min' in optim_config:
-            lr_scheduler_kwargs["eta_min"] = optim_config["lr_min"]
+            lr_scheduler_kwargs['eta_min'] = optim_config['lr_min']
 
         # Normally, you would pass the lr_scheduler to deepspeed.initialize(). But we need the
         # global batch_size in order to make the lr_scheduler.
@@ -584,8 +607,12 @@ if __name__ == '__main__':
     load_optimizer_states = config.get('load_optimizer_states', True)
     # if resuming and not loading optimizer states, we can't use warmup or the LR never changes from the initial value (still don't know why)
     if warmup_steps > 0 and load_optimizer_states:
-        warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1/warmup_steps, total_iters=warmup_steps)
-        lr_scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, schedulers=[warmup_scheduler, lr_scheduler], milestones=[warmup_steps])
+        warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+            optimizer, start_factor=1 / warmup_steps, total_iters=warmup_steps
+        )
+        lr_scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer, schedulers=[warmup_scheduler, lr_scheduler], milestones=[warmup_steps]
+        )
 
     model_engine.lr_scheduler = lr_scheduler
 
@@ -595,7 +622,7 @@ if __name__ == '__main__':
             run_dir,
             load_module_strict=False,
             load_lr_scheduler_states='force_constant_lr' not in config,
-            load_optimizer_states=load_optimizer_states
+            load_optimizer_states=load_optimizer_states,
         )
         deepspeed.comm.barrier()  # just so the print below doesn't get swamped
         assert load_path is not None
@@ -614,7 +641,9 @@ if __name__ == '__main__':
             pg['lr'] = config['force_constant_lr']
 
     # this is a separate option, because if it's too high we might drop a significant fraction of the eval dataset
-    eval_gradient_accumulation_steps = config['eval_gradient_accumulation_steps'] if 'eval_gradient_accumulation_steps' in config else 1
+    eval_gradient_accumulation_steps = (
+        config['eval_gradient_accumulation_steps'] if 'eval_gradient_accumulation_steps' in config else 1
+    )
     # Eval dataset doesn't need to repeat; we just use this to track "epoch" so we know when we're done iterating over it.
     eval_dataloaders = {
         name: dataloader.PipelineDataLoader(
@@ -661,7 +690,7 @@ if __name__ == '__main__':
                 tb_writer.add_scalar('train/weight_norm_avg', avg_norm, step)
                 tb_writer.add_scalar('train/weight_norm_max', max_norm, step)
                 tb_writer.add_histogram('train/weight_norm_hist', norms, step)
-            tb_writer.add_scalar('train/epoch', step/steps_per_epoch, step)
+            tb_writer.add_scalar('train/epoch', step / steps_per_epoch, step)
 
         if step % config['eval_steps'] == 0:
             loss = evaluate(model_engine, eval_dataloaders, tb_writer, step, eval_gradient_accumulation_steps)

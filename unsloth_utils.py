@@ -26,23 +26,25 @@ class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
     Saves VRAM by smartly offloading to RAM.
     Tiny hit to performance, since we mask the movement via non blocking calls.
     """
+
     @staticmethod
     @torch.amp.custom_fwd(device_type='cuda')
     def forward(ctx, forward_function, hidden_states, *args):
-        saved_hidden_states = hidden_states.to("cpu", non_blocking = True)
+        saved_hidden_states = hidden_states.to('cpu', non_blocking=True)
         with torch.no_grad():
             output = forward_function(hidden_states, *args)
         ctx.save_for_backward(saved_hidden_states)
         ctx.forward_function = forward_function
         ctx.args = args
         return output
+
     pass
 
     @staticmethod
     @torch.amp.custom_bwd(device_type='cuda')
     def backward(ctx, *grads):
         (hidden_states,) = ctx.saved_tensors
-        hidden_states = hidden_states.to("cuda", non_blocking = True).detach()
+        hidden_states = hidden_states.to('cuda', non_blocking=True).detach()
         hidden_states.requires_grad_(True)
         args = detach_variable(ctx.args)
         inputs = (hidden_states,) + args
@@ -57,7 +59,10 @@ class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
                 grad_tensors.append(grad)
         torch.autograd.backward(output_tensors, grad_tensors)
         return (None,) + tuple(input.grad for input in inputs)
+
     pass
+
+
 pass
 
 

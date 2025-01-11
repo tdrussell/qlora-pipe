@@ -22,8 +22,10 @@ def convert_ds_checkpoint_to_lora(ds_checkpoint_dir, lora_output_dir):
     os.makedirs(lora_output_dir, exist_ok=True)
     torch.save(combined_state_dict, os.path.join(lora_output_dir, 'adapter_model.bin'))
 
+
 if __name__ == '__main__':
     import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--input')
     parser.add_argument('--output')

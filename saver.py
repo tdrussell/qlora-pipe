@@ -15,6 +15,8 @@ from utils import DTYPE_MAP, is_main_process
 
 
 last_checkpoint_time = None
+
+
 def need_to_checkpoint(config):
     global last_checkpoint_time
     checkpoint = False
@@ -59,7 +61,6 @@ class Saver:
                 self.best_loss = float(f.read())
             print(f'Loaded best loss from disk: {self.best_loss}')
 
-
     # TODO: this is pretty hacky. Is there a way to get the state_dict from the lora model directly,
     # but still know which layers the given pipeline parallel stage actually trained?
     def save_lora(self, name):
@@ -75,9 +76,13 @@ class Saver:
             for name, p in self.pipeline_model.named_parameters():
                 if p.requires_grad:
                     if not hasattr(p, 'original_name'):
-                        print(f'WARNING: parameter {name} requires_grad but does not have original_name. Not saving it.')
+                        print(
+                            f'WARNING: parameter {name} requires_grad but does not have original_name. Not saving it.'
+                        )
                         continue
-                    partial_state_dict[p.original_name.replace('.default', '').replace('.modules_to_save', '')] = p.detach()
+                    partial_state_dict[p.original_name.replace('.default', '').replace('.modules_to_save', '')] = (
+                        p.detach()
+                    )
                     if 'save_dtype' in self.config:
                         convert_state_dict_dtype(partial_state_dict, self.config['save_dtype'])
             torch.save(partial_state_dict, os.path.join(tmp_dir, f'state_dict_{stage_id}.bin'))
@@ -89,10 +94,9 @@ class Saver:
             torch.save(state_dict, os.path.join(save_dir, 'adapter_model.bin'))
             self.lora_config.save_pretrained(save_dir)
             shutil.copy(self.args.config, save_dir)
-            if hasattr(self.args, "deepspeed_config") and self.args.deepspeed_config is not None:
+            if hasattr(self.args, 'deepspeed_config') and self.args.deepspeed_config is not None:
                 shutil.copy(self.args.deepspeed_config, save_dir)
             shutil.rmtree(tmp_dir)
-
 
     def save_full_model(self, name, max_shard_size='5GB'):
         dp_id = self.model_engine.grid.get_data_parallel_rank()
@@ -113,18 +117,20 @@ class Saver:
             state_dict = {}
             for path in glob.glob(os.path.join(tmp_dir, '*.bin')):
                 state_dict.update(torch.load(path, map_location='cpu'))
-            shards, index = transformers.modeling_utils.shard_checkpoint(state_dict, max_shard_size=max_shard_size, weights_name='model.safetensors')
+            shards, index = transformers.modeling_utils.shard_checkpoint(
+                state_dict, max_shard_size=max_shard_size, weights_name='model.safetensors'
+            )
             for shard_file, shard in shards.items():
-                save_file(shard, os.path.join(save_dir, shard_file), metadata={"format": "pt"})
+                save_file(shard, os.path.join(save_dir, shard_file), metadata={'format': 'pt'})
             if index is not None:
                 save_index_file = 'model.safetensors.index.json'
                 save_index_file = os.path.join(save_dir, save_index_file)
                 # Save the index as well
-                with open(save_index_file, "w", encoding="utf-8") as f:
-                    content = json.dumps(index, indent=2, sort_keys=True) + "\n"
+                with open(save_index_file, 'w', encoding='utf-8') as f:
+                    content = json.dumps(index, indent=2, sort_keys=True) + '\n'
                     f.write(content)
             shutil.copy(self.args.config, save_dir)
-            if hasattr(self.args, "deepspeed_config") and self.args.deepspeed_config is not None:
+            if hasattr(self.args, 'deepspeed_config') and self.args.deepspeed_config is not None:
                 shutil.copy(self.args.deepspeed_config, save_dir)
             additional_files_to_copy = [
                 'added_tokens.json',
@@ -140,30 +146,27 @@ class Saver:
                     shutil.copy(path, save_dir)
             shutil.rmtree(tmp_dir)
 
-
     def will_save(self, type, name):
         if self.keep_states <= 0 or not is_main_process():
             return
         if type == 'step':
             self.chrono_states['step'].append(name)
             if len(self.chrono_states['step']) > self.keep_states:
-                print(f"Deleting {self.chrono_states['step'][0]}")
+                print(f'Deleting {self.chrono_states["step"][0]}')
                 shutil.rmtree(os.path.join(self.save_root, self.chrono_states['step'].pop(0)))
         elif type == 'global_step':
             self.chrono_states['global_step'].append(name)
             if len(self.chrono_states['global_step']) > self.keep_states:
-                print(f"Deleting {self.chrono_states['global_step'][0]}")
+                print(f'Deleting {self.chrono_states["global_step"][0]}')
                 shutil.rmtree(os.path.join(self.save_root, self.chrono_states['global_step'].pop(0)))
         else:
             raise ValueError(f'Unknown save type: {type}')
 
-
     def save_model(self, name):
         # ignore epoch saves for chrono_states
-        if name.startswith("step"):
+        if name.startswith('step'):
             self.will_save('step', name)
         self.save_full_model(name) if self.lora_config is None else self.save_lora(name)
-
 
     def save_checkpoint(self, step):
         self.will_save('global_step', f'global_step{step}')
@@ -174,9 +177,8 @@ class Saver:
                 'custom_loader': self.train_dataloader.state_dict(),
             },
             save_latest=True,
-            exclude_frozen_parameters=True
+            exclude_frozen_parameters=True,
         )
-
 
     def process_epoch(self, epoch, step):
         if self.train_dataloader.epoch != epoch:
@@ -188,7 +190,6 @@ class Saver:
             if is_main_process():
                 print(f'Started new epoch: {epoch}')
         return epoch
-
 
     def process_step(self, step):
         # Look at some simple "signal files" the user can write to save and optionally quit manually
@@ -211,15 +212,20 @@ class Saver:
         if ('save_steps' in self.config and step % self.config['save_steps'] == 0) or should_manually_save:
             self.save_model(f'step{step}')
 
-        pending_save_best_loss = os.path.exists(os.path.join(self.save_root, ".pending_save_best_loss"))
+        pending_save_best_loss = os.path.exists(os.path.join(self.save_root, '.pending_save_best_loss'))
         if pending_save_best_loss:
             self.save_model('best_loss')
             if is_main_process():
                 if self.old_best is not None:
-                    print(f"New best evaluation loss: {self.best_loss:.4f} from {self.old_best:.4f} (Δ{self.old_best - self.best_loss:.5f} [{100 * (1 - self.best_loss / self.old_best):.2f}%])")
+                    print(
+                        f'New best evaluation loss: {self.best_loss:.4f} from {self.old_best:.4f} (Δ{self.old_best - self.best_loss:.5f} [{100 * (1 - self.best_loss / self.old_best):.2f}%])'
+                    )
                 else:
-                    print(f"New best evaluation loss: {self.best_loss:.4f}")
-                os.replace(os.path.join(self.save_root, '.pending_save_best_loss'), os.path.join(self.save_root, 'best_loss.txt'))
+                    print(f'New best evaluation loss: {self.best_loss:.4f}')
+                os.replace(
+                    os.path.join(self.save_root, '.pending_save_best_loss'),
+                    os.path.join(self.save_root, 'best_loss.txt'),
+                )
 
         if need_to_checkpoint(self.config) or should_manually_save:
             self.save_checkpoint(step)
@@ -228,17 +234,18 @@ class Saver:
             print('Manually quitting')
             sys.exit()
 
-
     def append_eval_results(self, loss, save_best=True):
         if loss is not None:
             if self.best_loss is None:
-                print(f"Evaluation loss: {loss:.4f}")
+                print(f'Evaluation loss: {loss:.4f}')
             elif loss >= self.best_loss:
-                print(f"Evaluation loss: {loss:.4f} (best: {self.best_loss:.4f}, Δ: {self.best_loss - loss:.5f} [{100 * (1 - loss / self.best_loss):.2f}%])")
+                print(
+                    f'Evaluation loss: {loss:.4f} (best: {self.best_loss:.4f}, Δ: {self.best_loss - loss:.5f} [{100 * (1 - loss / self.best_loss):.2f}%])'
+                )
             if self.best_loss is None or loss < self.best_loss:
                 self.old_best = self.best_loss
                 self.best_loss = loss
                 if save_best:
-                    with open(os.path.join(self.save_root, ".pending_save_best_loss"), "w") as f:
+                    with open(os.path.join(self.save_root, '.pending_save_best_loss'), 'w') as f:
                         f.write(str(self.best_loss))
         deepspeed.comm.barrier()
