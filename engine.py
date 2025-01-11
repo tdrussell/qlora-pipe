@@ -14,6 +14,7 @@ from deepspeed.runtime.activation_checkpointing import checkpointing as ds_check
 from deepspeed.runtime.pipe.module import PipelineModule
 from deepspeed.runtime import utils as ds_utils
 from deepspeed.runtime.pipe.module import LayerSpec
+from deepspeed.runtime.pipe.topology import ProcessTopology
 from deepspeed.runtime.pipe.schedule import (
     PipeSchedule, OptimizerStep, ReduceGrads, ReduceTiedGrads, PipeInstruction, BufferOpInstruction, LoadMicroBatch, ForwardPass, BackwardPass,
     SendActivation, RecvActivation, SendGrad, RecvGrad, _is_even, _is_odd,
@@ -653,10 +654,29 @@ class CustomPipelineEngine(PipelineEngine):
     PipelineEngine._INSTRUCTION_MAP[ReferenceLogitsForwardPass] = _exec_reference_logits_forward_pass
 
 
+class ColumnMajorParallelTopology(ProcessTopology):
+    """
+    A topology specialisation for hybrid data+pipeline parallelism optimized for LoRA training:
+    - Sends high-volume "per token" hidden states over PCIe/NVLink.
+    - Sends lower-volume "per step" LoRA gradient reductions over Ethernet/InfiniBand.
+    """
+    def __init__(self, num_pp, num_dp):
+        # Swap the axes and dims to change the rank mapping
+        super().__init__(axes=['data', 'pipe'], dims=[num_dp, num_pp])
+
+
 class CustomPipelineModule(PipelineModule):
-    def __init__(self, layers, model=None, **kwargs):
+    def __init__(self, layers, use_column_major_topology, model=None, **kwargs):
         # Assign to list to avoid registering the nn.Module
         self._model = [model]
+        # Hybrid LoRA data+pipeline parallelism may want to use "column-major" layout
+        if use_column_major_topology:
+            world_size = dist.get_world_size()
+            num_stages = kwargs.get('num_stages')
+            if num_stages > 1 and world_size > 1:
+                assert world_size % num_stages == 0, f"world_size ({world_size}) must be divisible by num_stages ({num_stages})"
+                num_dp = world_size // num_stages
+                kwargs['topology'] = ColumnMajorParallelTopology(num_pp=num_stages, num_dp=num_dp)
         super().__init__(layers, **kwargs)
 
     @property
