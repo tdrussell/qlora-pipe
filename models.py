@@ -1,8 +1,17 @@
+import accelerate
 import torch
 import transformers
-import accelerate
 
-from layers import *
+from layers import (
+    InputLayer,
+    LayerSpec,
+    LlamaDecoderLayerPipe,
+    LlamaRMSNormPipe,
+    MixtralDecoderLayerPipe,
+    MixtralOutputLayer,
+    OutputLayer,
+    Phi3DecoderLayerPipe,
+)
 from pipeline_model import PipelineModel
 from utils import DTYPE_MAP
 
@@ -205,7 +214,7 @@ class MixtralForCausalLMPipe(PipelineModel, transformers.MixtralForCausalLM):
         torch.set_default_dtype(torch.float32)
         self.load_balancing_loss_coef = config.get('load_balancing_loss_coef', None)
         self.num_experts_to_offload = self.num_experts
-        if 'offload_mlp_to_cpu' in config and type(config['offload_mlp_to_cpu']) == int:
+        if 'offload_mlp_to_cpu' in config and isinstance(config['offload_mlp_to_cpu'], int):
             self.num_experts_to_offload = config['offload_mlp_to_cpu']
 
     def to_layer_specs(self):

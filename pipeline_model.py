@@ -1,17 +1,17 @@
 import os
-from inspect import signature
 from collections import defaultdict
+from inspect import signature
 
-from torch import nn
+import accelerate
+import bitsandbytes as bnb
 import transformers
 from deepspeed.accelerator import get_accelerator
-from transformers.integrations import get_keys_to_not_convert
-import bitsandbytes as bnb
-import accelerate
 from hqq.core import quantize as hqq_quantize
+from torch import nn
+from transformers.integrations import get_keys_to_not_convert
 
-from utils import is_main_process
 import hqq_utils
+from utils import is_main_process
 
 
 class PipelineModel(nn.Module):
@@ -26,7 +26,7 @@ class PipelineModel(nn.Module):
             self.loss_type = rl_config['method']
         self.focal_loss_gamma = config.get('focal_loss_gamma', 0)
         if self.focal_loss_gamma > 0 and is_main_process():
-            print(f'Optimizing using \'{self.loss_type}\' with gamma={self.focal_loss_gamma}')
+            print(f"Optimizing using '{self.loss_type}' with gamma={self.focal_loss_gamma}")
         self.dpo_reference_mode = False
         self.sampling_mode = False
         self.cache = None
@@ -64,8 +64,10 @@ def _replace_with_quantized_linear(parent_modules_map, name, full_name, quantiza
 
 
 def _replace_with_bnb_linear(parent_modules_map, name, full_name, quantization_config):
-    '''Replace a Linear layer with a BNB quantized version.'''
-    if quantization_config.llm_int8_skip_modules is not None and _partial_module_name_match(full_name, quantization_config.llm_int8_skip_modules):
+    """Replace a Linear layer with a BNB quantized version."""
+    if quantization_config.llm_int8_skip_modules is not None and _partial_module_name_match(
+        full_name, quantization_config.llm_int8_skip_modules
+    ):
         return
     module = parent_modules_map[name]
     with accelerate.init_empty_weights():
@@ -75,7 +77,7 @@ def _replace_with_bnb_linear(parent_modules_map, name, full_name, quantization_c
             in_features = module.in_features
             out_features = module.out_features
 
-        if quantization_config.quantization_method() == "llm_int8":
+        if quantization_config.quantization_method() == 'llm_int8':
             parent_modules_map[name] = bnb.nn.Linear8bitLt(
                 in_features,
                 out_features,
@@ -85,8 +87,8 @@ def _replace_with_bnb_linear(parent_modules_map, name, full_name, quantization_c
             )
         else:
             extra_kwargs = (
-                {"quant_storage": quantization_config.bnb_4bit_quant_storage}
-                if "quant_storage" in list(signature(bnb.nn.Linear4bit).parameters)
+                {'quant_storage': quantization_config.bnb_4bit_quant_storage}
+                if 'quant_storage' in list(signature(bnb.nn.Linear4bit).parameters)
                 else {}
             )
             parent_modules_map[name] = bnb.nn.Linear4bit(
@@ -105,7 +107,7 @@ def _replace_with_bnb_linear(parent_modules_map, name, full_name, quantization_c
 
 
 def _replace_with_hqq_linear(parent_modules_map, name, full_name, quantization_config):
-    '''Replace a Linear layer with a HQQ quantized version.'''
+    """Replace a Linear layer with a HQQ quantized version."""
     if _partial_module_name_match(full_name, quantization_config.skip_modules):
         return
     module = parent_modules_map[name]
@@ -116,7 +118,7 @@ def _replace_with_hqq_linear(parent_modules_map, name, full_name, quantization_c
         compute_dtype=quantization_config.compute_dtype,
         device=module.weight.device,
         initialize=True,
-        del_orig=True
+        del_orig=True,
     )
     # Quantization itself uses a decent amount of VRAM. Temporarily move each quantized parameter to the CPU as we
     # finish, so the quant process doesn't OOM. Deepspeed will move everything to the correct device later.
@@ -145,9 +147,9 @@ def _recursively_replace_with_quantized_linear(
 
         if (isinstance(module, nn.Linear) or isinstance(module, nn.Conv1d)) and name not in modules_to_not_convert:
             # Check if the current key is not in the `modules_to_not_convert`
-            current_key_name_str = ".".join(current_key_name)
+            current_key_name_str = '.'.join(current_key_name)
             if not any(
-                (key + "." in current_key_name_str) or (key == current_key_name_str) for key in modules_to_not_convert
+                (key + '.' in current_key_name_str) or (key == current_key_name_str) for key in modules_to_not_convert
             ):
                 _replace_with_quantized_linear(model._modules, name, current_key_name_str, quantization_config)
 
@@ -174,16 +176,14 @@ class LoaderUtil:
         self.model_path = model_path
         self.quantization_config = quantization_config
         self.modules_to_not_quantize = modules_to_not_quantize
-        self.local_rank = int(os.environ.get("LOCAL_RANK", None))
+        self.local_rank = int(os.environ.get('LOCAL_RANK', None))
         assert self.local_rank is not None
         self.device = get_accelerator().device_name(self.local_rank)
 
         index_file = os.path.join(model_path, transformers.utils.SAFE_WEIGHTS_INDEX_NAME)
         if os.path.exists(index_file):
             checkpoint_files, checkpoint_metadata = transformers.utils.hub.get_checkpoint_shard_files(
-                model_path,
-                index_file,
-                local_files_only=True
+                model_path, index_file, local_files_only=True
             )
             self.checkpoint_metadata = checkpoint_metadata
         else:
@@ -223,7 +223,7 @@ class LoaderUtil:
 
         if self.checkpoint_metadata is not None:
             weight_map = self.checkpoint_metadata['weight_map']
-            needed_checkpoint_files = set(weight_map[key.replace('orig.', '')] for key in expected_keys)
+            needed_checkpoint_files = {weight_map[key.replace('orig.', '')] for key in expected_keys}
         else:
             needed_checkpoint_files = ['model.safetensors']
 
