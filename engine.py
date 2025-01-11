@@ -668,7 +668,7 @@ class ColumnMajorParallelTopology(ProcessTopology):
 class CustomPipelineModule(PipelineModule):
     def __init__(self, layers, use_column_major_topology, model=None, **kwargs):
         # Assign to list to avoid registering the nn.Module
-        self.model = [model]
+        self._model = [model]
         # Hybrid LoRA data+pipeline parallelism may want to use "column-major" layout
         if use_column_major_topology:
             world_size = dist.get_world_size()
