@@ -347,9 +347,12 @@ class InputLayer(nn.Module):
         else:
             cos, sin = torch.tensor([], device=device), torch.tensor([], device=device)
 
-        # Deepspeed requirement. Hidden states must require grad.
-        hidden_states.requires_grad_(True)
-        return hidden_states, attention_mask, position_ids, cos, sin, labels
+        output = hidden_states, attention_mask, position_ids, cos, sin, labels
+        # Deepspeed requirement. Float tensors must require grad.
+        for tensor in output:
+            if torch.is_floating_point(tensor):
+                tensor.requires_grad_(True)
+        return output
 
 
 class LlamaRMSNormPipe(nn.Module):
