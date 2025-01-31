@@ -121,12 +121,31 @@ def load_axolotl_dataset(dataset_path, tokenizer, sequence_len, eval_size):
     return train_data, eval_data
 
 
+def load_pretokenized_dataset(dataset_path, tokenizer, sequence_len, eval_size):
+    ds = datasets.load_from_disk(dataset_path)
+    assert 'input_ids' in ds.column_names
+    assert 'attention_mask' in ds.column_names
+    assert 'labels' in ds.column_names
+    ds = ds.filter(lambda example: len(example['input_ids']) <= sequence_len, desc='dropping long sequences', num_proc=NUM_PROC)
+    if eval_size > 0:
+        split_datasets = ds.train_test_split(test_size=eval_size, shuffle=True, seed=42)
+        train_data = split_datasets['train']
+        eval_data = split_datasets['test']
+    else:
+        train_data = ds
+        eval_data = None
+    return train_data, eval_data
+
+
 def load_single_dataset(dataset_path, dataset_type, tokenizer, sequence_len, eval_size, subsample=None):
     if dataset_type in ['textfile', 'doclist']:
         with zero_first(is_main_process()):
             train_data, eval_data = load_raw_dataset(dataset_path, tokenizer, sequence_len, eval_size)
     elif dataset_type == 'axolotl':
         train_data, eval_data = load_axolotl_dataset(dataset_path, tokenizer, sequence_len, eval_size)
+    elif dataset_type == 'pretokenized':
+        with zero_first(is_main_process()):
+            train_data, eval_data = load_pretokenized_dataset(dataset_path, tokenizer, sequence_len, eval_size)
     else:
         raise NotImplementedError()
 
