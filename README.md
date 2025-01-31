@@ -108,6 +108,9 @@ If you are using 16 bit dtypes, floating point roundoff error is a potential pro
  - (more experimental) You may try Deepspeed's bf16 mode, but I personally don't use this. I think this does something like mixed precision, where it wraps the optimizer to keep a master copy of the parameters in fp32, as well as doing gradient accumulation and all optimizer states in fp32. This will use much more memory than full bf16 + Kahan summation.
 
 ## Changelog
+### 2025-01-30
+- Add pretokenized dataset option.
+- Update layers to work with the new way to pass position embeddings in HF Transformers. Please update Transformers to the latest version or you will get errors.
 ### 2024-12-29
 - Add DPO training. The examples directory has a DPO example.
 ### 2024-07-02

@@ -288,8 +288,7 @@ class InputLayer(nn.Module):
         super().__init__()
         self._model = [model]
         self.embed_tokens = model.model.embed_tokens
-        if self.model.model.config.model_type == 'llama':
-            self.rotary_emb = model.model.rotary_emb
+        self.rotary_emb = model.model.rotary_emb
         self.embedding_on_cpu = not self.model.train_config['full_fine_tune']
         self.model.loader_util.load_state_dict_into_module(self)
 
@@ -324,7 +323,7 @@ class InputLayer(nn.Module):
         original_attention_mask = attention_mask
         if self.model.model.config.model_type == 'mistral':
             attention_mask = self.model.model._update_causal_mask(
-                attention_mask, inputs_embeds, cache_position, past_key_values, use_cache, None
+                attention_mask, inputs_embeds, cache_position, past_key_values, None
             )
         else:
             attention_mask = self.model.model._update_causal_mask(
@@ -341,13 +340,10 @@ class InputLayer(nn.Module):
         if self.model.model.config.model_type == 'gemma2':
             normalizer = torch.tensor(self.model.model.config.hidden_size**0.5, dtype=hidden_states.dtype)
             hidden_states = hidden_states * normalizer
-        if self.model.model.config.model_type == 'llama':
-            cos, sin = self.rotary_emb(hidden_states, position_ids)
-            position_ids = torch.tensor([], device=device)
-        else:
-            cos, sin = torch.tensor([], device=device), torch.tensor([], device=device)
 
-        output = hidden_states, attention_mask, position_ids, cos, sin, labels
+        cos, sin = self.rotary_emb(hidden_states, position_ids)
+
+        output = hidden_states, attention_mask, cos, sin, labels
         # Deepspeed requirement. Float tensors must require grad.
         for tensor in output:
             if torch.is_floating_point(tensor):
@@ -362,7 +358,7 @@ class LlamaRMSNormPipe(nn.Module):
         loader_util.load_state_dict_into_module(self)
 
     def forward(self, inputs):
-        hidden_states, _, _, _, _, labels, *router_logits = inputs
+        hidden_states, _, _, _, labels, *router_logits = inputs
         return self.orig(hidden_states), labels, *router_logits
 
 
@@ -385,7 +381,7 @@ class LlamaDecoderLayerPipe(nn.Module):
             self.move_mlp_to_cpu()
             return None
 
-        hidden_states, input_attention_mask, position_ids, cos, sin, labels = inputs
+        hidden_states, input_attention_mask, cos, sin, labels = inputs
         if self.mlp_offloaded_to_cpu:
             if hidden_states.requires_grad:
                 hidden_states.register_hook(move_mlp_to_cpu_hook)
@@ -396,16 +392,11 @@ class LlamaDecoderLayerPipe(nn.Module):
             kwargs['attention_mask'] = None
         else:
             kwargs['attention_mask'] = input_attention_mask
-        if self.pipeline_model[0].model.config.model_type == 'llama':
-            # Llama model uses precomputed RoPE embeddings.
-            kwargs['position_embeddings'] = (cos, sin)
-        else:
-            # Everything else (unless this is gradually changing?) still uses position_ids.
-            kwargs['position_ids'] = position_ids
+        kwargs['position_embeddings'] = (cos, sin)
         if self.pipeline_model[0].sampling_mode:
             kwargs['use_cache'] = True
             kwargs['past_key_value'] = self.pipeline_model[0].cache
-        result = (self.orig(hidden_states, **kwargs)[0], input_attention_mask, position_ids, cos, sin, labels)
+        result = (self.orig(hidden_states, **kwargs)[0], input_attention_mask, cos, sin, labels)
         if self.mlp_offloaded_to_cpu and not torch.is_grad_enabled():
             self.move_mlp_to_cpu()
         return result
@@ -458,7 +449,7 @@ class MixtralDecoderLayerPipe(LlamaDecoderLayerPipe):
             self.move_mlp_to_cpu()
             return None
 
-        hidden_states, input_attention_mask, position_ids, cos, sin, labels, *input_router_logits = inputs
+        hidden_states, input_attention_mask, cos, sin, labels, *input_router_logits = inputs
         if self.mlp_offloaded_to_cpu:
             if hidden_states.requires_grad:
                 hidden_states.register_hook(move_mlp_to_cpu_hook)
@@ -469,12 +460,7 @@ class MixtralDecoderLayerPipe(LlamaDecoderLayerPipe):
             kwargs['attention_mask'] = None
         else:
             kwargs['attention_mask'] = input_attention_mask
-        if self.pipeline_model[0].model.config.model_type == 'llama':
-            # Llama model uses precomputed RoPE embeddings.
-            kwargs['position_embeddings'] = (cos, sin)
-        else:
-            # Everything else (unless this is gradually changing?) still uses position_ids.
-            kwargs['position_ids'] = position_ids
+        kwargs['position_embeddings'] = (cos, sin)
         if self.pipeline_model[0].sampling_mode:
             kwargs['use_cache'] = True
             kwargs['past_key_value'] = self.pipeline_model[0].cache
@@ -482,8 +468,8 @@ class MixtralDecoderLayerPipe(LlamaDecoderLayerPipe):
         # TODO: fix unsloth gradient checkpointing when we return router logits
         # router_logits = router_logits.to(torch.float32)
         # router_logits = input_router_logits + (router_logits,)
-        # result = (hidden_states, input_attention_mask, position_ids, cos, sin, labels, *router_logits)
-        result = (hidden_states, input_attention_mask, position_ids, cos, sin, labels)
+        # result = (hidden_states, input_attention_mask, cos, sin, labels, *router_logits)
+        result = (hidden_states, input_attention_mask, cos, sin, labels)
         if self.mlp_offloaded_to_cpu and not torch.is_grad_enabled():
             self.move_mlp_to_cpu()
         return result

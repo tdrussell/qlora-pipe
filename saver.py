@@ -18,6 +18,8 @@ last_checkpoint_time = None
 
 
 def need_to_checkpoint(config):
+    if 'checkpoint_every_n_minutes' not in config:
+        return False
     global last_checkpoint_time
     checkpoint = False
     # rank 0 tracks if we need to checkpoint, broadcasts to everyone else

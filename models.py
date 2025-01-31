@@ -30,7 +30,9 @@ class LlamaForCausalLMPipe(PipelineModel, transformers.LlamaForCausalLM):
         torch.set_default_dtype(torch.float32)
 
     def to_layer_specs(self):
-        result = [LayerSpec(InputLayer, self)]
+        embedding_relative_size = 4
+        embedding_on_cpu = not self.train_config['full_fine_tune']
+        result = [LayerSpec(InputLayer, self, _estimated_size=0 if embedding_on_cpu else embedding_relative_size)]
         for block in self.model.layers:
             result.append(LayerSpec(LlamaDecoderLayerPipe, self, self.loader_util, block))
         result.append(LayerSpec(LlamaRMSNormPipe, self.loader_util, self.model.norm, _estimated_size=0))
@@ -43,6 +45,7 @@ class LlamaForCausalLMPipe(PipelineModel, transformers.LlamaForCausalLM):
                 loss_type=self.loss_type,
                 focal_loss_gamma=self.focal_loss_gamma,
                 tie_weights='model.embed_tokens.weight' if self.config.tie_word_embeddings else None,
+                _estimated_size=embedding_relative_size,
             )
         )
         return result
