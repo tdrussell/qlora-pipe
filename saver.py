@@ -185,9 +185,13 @@ class Saver:
         )
 
     def process_epoch(self, epoch, step):
+        save_every_n_epochs = self.config.get('save_every_n_epochs', 1)
+        save_checkpoint_on_epoch_end = self.config.get('save_checkpoint_on_epoch_end', True)
         if self.train_dataloader.epoch != epoch:
-            self.save_checkpoint(step)
-            self.save_model(f'epoch{epoch}')
+            if save_checkpoint_on_epoch_end:
+                self.save_checkpoint(step)
+            if epoch % save_every_n_epochs == 0:
+                self.save_model(f'epoch{epoch}')
             epoch = self.train_dataloader.epoch
             if epoch > self.config['epochs']:
                 return None
