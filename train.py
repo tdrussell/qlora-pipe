@@ -293,6 +293,8 @@ def load_pipeline_model_with_lora(config, model_type, dynamic_shape=False):
         model = models.Gemma2ForCausalLMPipe(config, quantization_config=quantization_config)
     elif model_type == 'mistral':
         model = models.MistralForCausalLMPipe(config, quantization_config=quantization_config)
+    elif model_type == 'gemma3':
+        model = models.Gemma3ForCausalLMPipe(config, quantization_config=quantization_config)
     else:
         raise NotImplementedError()
 

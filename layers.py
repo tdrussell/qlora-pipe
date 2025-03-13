@@ -486,3 +486,142 @@ class MixtralDecoderLayerPipe(LlamaDecoderLayerPipe):
         self.orig_data = move_experts_to_device(
             self.orig.block_sparse_moe.experts, device, self.num_experts_to_offload
         )
+
+
+class Gemma3InputLayer(nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self._model = [model]
+        self.embed_tokens = model.model.embed_tokens
+        self.rotary_emb = model.model.rotary_emb
+        self.rotary_emb_local = model.model.rotary_emb_local
+        self.embedding_on_cpu = not self.model.train_config['full_fine_tune']
+        self.model.loader_util.load_state_dict_into_module(self)
+
+    @property
+    def model(self):
+        return self._model[0]
+
+    def forward(self, inputs):
+        past_key_values = None
+        cache_position = None
+        use_cache = self.model.sampling_mode
+
+        input_ids, attention_mask, labels = inputs[:3]
+        if self.model.sampling_mode:
+            micro_batch_id = inputs[3].item()
+            self.model.set_cache(micro_batch_id)
+        device = input_ids.device
+        if self.embedding_on_cpu:
+            self.embed_tokens.to('cpu')
+            input_ids = input_ids.to('cpu')
+
+        inputs_embeds = self.embed_tokens(input_ids).to(device)
+        if use_cache:
+            past_key_values = self.model.cache
+
+        past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
+        cache_position = torch.arange(
+            past_seen_tokens, past_seen_tokens + inputs_embeds.shape[1], device=inputs_embeds.device
+        )
+        position_ids = cache_position.unsqueeze(0)
+
+        original_attention_mask = attention_mask
+        attention_mask = self.model.model._update_causal_mask(
+            attention_mask, inputs_embeds, cache_position, past_key_values, None
+        )
+        if attention_mask is None:
+            # With FA, attention_mask can end up being None. But with deepspeed we can't pass None
+            # between GPUs. So force it back to the original attention_mask.
+            # TODO: with pipeline parallelism all tensors have to be the same shape between micro batches.
+            # Can we handle None attention_mask better? Sending empty tensor and converting it later will not
+            # work, due to static shape constraints. Maybe fill the original attention mask with some signal value?
+            attention_mask = original_attention_mask
+        hidden_states = inputs_embeds
+        if self.model.model.config.model_type == 'gemma2':
+            normalizer = torch.tensor(self.model.model.config.hidden_size**0.5, dtype=hidden_states.dtype)
+            hidden_states = hidden_states * normalizer
+
+        position_embeddings_global_cos, position_embeddings_global_sin = self.rotary_emb(hidden_states, position_ids)
+        position_embeddings_local_cos, position_embeddings_local_sin = self.rotary_emb_local(hidden_states, position_ids)
+
+        output = hidden_states, attention_mask, position_embeddings_global_cos, position_embeddings_global_sin, position_embeddings_local_cos, position_embeddings_local_sin, cache_position, labels
+        # Deepspeed requirement. Float tensors must require grad.
+        for tensor in output:
+            if torch.is_floating_point(tensor):
+                tensor.requires_grad_(True)
+        return output
+
+
+class Gemma3DecoderLayerPipe(nn.Module):
+    def __init__(self, pipeline_model, loader_util, orig):
+        super().__init__()
+        self.pipeline_model = [pipeline_model]
+        self.orig = orig
+        self.mlp_offloaded_to_cpu = False
+        loader_util.load_state_dict_into_module(self)
+
+    def forward(self, inputs):
+        def move_mlp_to_cpu_hook(grad):
+            self.move_mlp_to_cpu()
+            return None
+
+        hidden_states, attention_mask, position_embeddings_global_cos, position_embeddings_global_sin, position_embeddings_local_cos, position_embeddings_local_sin, cache_position, labels = inputs
+        if self.mlp_offloaded_to_cpu:
+            if hidden_states.requires_grad:
+                hidden_states.register_hook(move_mlp_to_cpu_hook)
+            self.move_mlp_to_device(hidden_states.device)
+        kwargs = {}
+        if attention_mask.numel() == 0:
+            # We can't pass None between pipeline layers, so this signals that attention_mask should be None.
+            kwargs['attention_mask'] = None
+        else:
+            kwargs['attention_mask'] = attention_mask
+        kwargs['position_embeddings_global'] = (position_embeddings_global_cos, position_embeddings_global_sin)
+        kwargs['position_embeddings_local'] = (position_embeddings_local_cos, position_embeddings_local_sin)
+        kwargs['cache_position'] = cache_position
+        if self.pipeline_model[0].sampling_mode:
+            kwargs['use_cache'] = True
+            kwargs['past_key_value'] = self.pipeline_model[0].cache
+        result = (
+            self.orig(hidden_states, **kwargs)[0],
+            attention_mask,
+            position_embeddings_global_cos,
+            position_embeddings_global_sin,
+            position_embeddings_local_cos,
+            position_embeddings_local_sin,
+            cache_position,
+            labels
+        )
+        if self.mlp_offloaded_to_cpu and not torch.is_grad_enabled():
+            self.move_mlp_to_cpu()
+        return result
+
+    def move_mlp_to_cpu(self):
+        # If it's already been moved to CPU once, just set the data to avoid a transfer.
+        if self.mlp_offloaded_to_cpu:
+            set_data(self.orig.mlp.up_proj, self.cpu_up_proj)
+            set_data(self.orig.mlp.down_proj, self.cpu_down_proj)
+            set_data(self.orig.mlp.gate_proj, self.cpu_gate_proj)
+            return
+
+        move_data_to_device(self.orig.mlp.up_proj, 'cpu')
+        move_data_to_device(self.orig.mlp.down_proj, 'cpu')
+        move_data_to_device(self.orig.mlp.gate_proj, 'cpu')
+        self.mlp_offloaded_to_cpu = True
+
+    def move_mlp_to_device(self, device):
+        self.cpu_up_proj = move_data_to_device(self.orig.mlp.up_proj, device)
+        self.cpu_down_proj = move_data_to_device(self.orig.mlp.down_proj, device)
+        self.cpu_gate_proj = move_data_to_device(self.orig.mlp.gate_proj, device)
+
+
+class Gemma3RMSNormPipe(nn.Module):
+    def __init__(self, loader_util, orig):
+        super().__init__()
+        self.orig = orig
+        loader_util.load_state_dict_into_module(self)
+
+    def forward(self, inputs):
+        hidden_states, *_, labels = inputs
+        return self.orig(hidden_states), labels

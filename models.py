@@ -11,6 +11,9 @@ from layers import (
     MixtralOutputLayer,
     OutputLayer,
     Phi3DecoderLayerPipe,
+    Gemma3InputLayer,
+    Gemma3DecoderLayerPipe,
+    Gemma3RMSNormPipe,
 )
 from pipeline_model import PipelineModel
 from utils import DTYPE_MAP
@@ -236,6 +239,40 @@ class MixtralForCausalLMPipe(PipelineModel, transformers.MixtralForCausalLM):
                 num_experts_per_tok=self.num_experts_per_tok,
                 loss_type=self.loss_type,
                 focal_loss_gamma=self.focal_loss_gamma,
+            )
+        )
+        return result
+
+class Gemma3ForCausalLMPipe(PipelineModel, transformers.Gemma3ForCausalLM):
+    def __init__(self, config, quantization_config):
+        model_config = transformers.Gemma3TextConfig.from_pretrained(config['model'])
+        model_config._attn_implementation = 'flash_attention_2'
+        torch.set_default_dtype(DTYPE_MAP[config.get('model_weight_dtype', 'bfloat16')])
+        with accelerate.init_empty_weights():
+            transformers.Gemma3ForCausalLM.__init__(self, model_config)
+            PipelineModel.__init__(self, config, quantization_config, model_config)
+        torch.set_default_dtype(torch.float32)
+
+    def to_layer_specs(self):
+        # the embedding table for this model is huge; load balance it better with some heuristics
+        # this value optimized for LoRA, pipeline_stages=2
+        embedding_relative_size = 8
+        embedding_on_cpu = not self.train_config['full_fine_tune']
+        result = [LayerSpec(Gemma3InputLayer, self, _estimated_size=1 if embedding_on_cpu else embedding_relative_size)]
+        for block in self.model.layers:
+            result.append(LayerSpec(Gemma3DecoderLayerPipe, self, self.loader_util, block))
+        result.append(LayerSpec(Gemma3RMSNormPipe, self.loader_util, self.model.norm, _estimated_size=0))
+        result.append(
+            LayerSpec(
+                OutputLayer,
+                self,
+                self.loader_util,
+                self.lm_head,
+                loss_type=self.loss_type,
+                focal_loss_gamma=self.focal_loss_gamma,
+                tie_weights='model.embed_tokens.weight' if self.config.tie_word_embeddings else None,
+                logit_softcapping=self.config.final_logit_softcapping,
+                _estimated_size=embedding_relative_size,
             )
         )
         return result
