@@ -48,31 +48,13 @@ def _maybe_include_all_linear_layers(peft_config: peft.PeftConfig, model: nn.Mod
     peft_config.target_modules = linear_module_names
     return peft_config
 
-
 peft.tuners.tuners_utils._maybe_include_all_linear_layers = _maybe_include_all_linear_layers
-
-
-# Monkeypatch HQQ set_backend so it doesn't spam logs with WARNING message every time HQQLinear is created
-@classmethod
-def _set_backend(cls, backend):
-    if 'aten' in backend.value:
-        if hqq_quantize.hqq_aten_is_available is False:
-            print('ATEN/CUDA backend not availabe. Make sure you install the hqq_aten library.')
-            return
-    hqq_quantize.HQQLinear.backend = backend
-    cls.forward = getattr(cls, backend.value)
-
-
-hqq_quantize.HQQLinear.set_backend = _set_backend
 
 
 @dataclass
 class CustomHQQConfig:
     nbits: int = 4
     group_size: int = 64
-    quant_zero: bool = True
-    quant_scale: bool = False
-    offload_meta: bool = False
     view_as_float: bool = False
     axis: int = 0
     dynamic_config: dict[str, Any] = field(default_factory=dict)
