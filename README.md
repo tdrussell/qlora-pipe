@@ -19,7 +19,7 @@ That being said, if something doesn't work right, or you would like it to suppor
 - Useful metrics logged to Tensorboard
 - Ability to specify a separate, fixed evaluation dataset
 - Train on multiple datasets simultaneously, with different sampling ratios per dataset
-- Models currently supported: Llama, Mistral, Mixtral, Qwen, Cohere (Command R), Phi-3 (mini and medium), Gemma-2
+- Models currently supported: Llama, Mistral, Mixtral, Qwen, Cohere (Command R), Phi-3 (mini and medium), Gemma 2, Gemma 3
 
 ## Installing
 Clone the repository:
@@ -108,6 +108,9 @@ If you are using 16 bit dtypes, floating point roundoff error is a potential pro
  - (more experimental) You may try Deepspeed's bf16 mode, but I personally don't use this. I think this does something like mixed precision, where it wraps the optimizer to keep a master copy of the parameters in fp32, as well as doing gradient accumulation and all optimizer states in fp32. This will use much more memory than full bf16 + Kahan summation.
 
 ## Changelog
+### 2025-03-12
+- Change how weights are loaded to avoid Transformers internal method
+- Support Gemma 3
 ### 2025-01-30
 - Add pretokenized dataset option.
 - Update layers to work with the new way to pass position embeddings in HF Transformers. Please update Transformers to the latest version or you will get errors.
