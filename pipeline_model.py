@@ -1,6 +1,7 @@
 import os
 from collections import defaultdict
 from inspect import signature
+import re
 
 import accelerate
 import bitsandbytes as bnb
@@ -9,9 +10,13 @@ from deepspeed.accelerator import get_accelerator
 from hqq.core import quantize as hqq_quantize
 from torch import nn
 from transformers.integrations import get_keys_to_not_convert
+from accelerate.utils import set_module_tensor_to_device
 
 import hqq_utils
 from utils import is_main_process
+
+
+LANGUAGE_MODEL_WEIGHT_PREFIX_REGEX = r'^language_model\.'
 
 
 class PipelineModel(nn.Module):
@@ -194,6 +199,7 @@ class LoaderUtil:
         if self.loaded_state_dict is None or leaf_file != self.loaded_state_dict[0]:
             print(f'loading checkpoint file {leaf_file}')
             state_dict = transformers.modeling_utils.load_state_dict(os.path.join(self.model_path, leaf_file))
+            state_dict = {re.sub(LANGUAGE_MODEL_WEIGHT_PREFIX_REGEX, '', k): v for k, v in state_dict.items()}
             self.loaded_state_dict = (leaf_file, state_dict)
         return self.loaded_state_dict[1]
 
@@ -223,6 +229,7 @@ class LoaderUtil:
 
         if self.checkpoint_metadata is not None:
             weight_map = self.checkpoint_metadata['weight_map']
+            weight_map = {re.sub(LANGUAGE_MODEL_WEIGHT_PREFIX_REGEX, '', k): v for k, v in weight_map.items()}
             needed_checkpoint_files = {weight_map[key.replace('orig.', '')] for key in expected_keys}
         else:
             needed_checkpoint_files = ['model.safetensors']
@@ -230,14 +237,9 @@ class LoaderUtil:
         for checkpoint_file in needed_checkpoint_files:
             state_dict = self.get_partial_state_dict(checkpoint_file)
             renamed_state_dict = {param_renaming_map[k]: v for k, v in state_dict.items() if k in param_renaming_map}
-            # Use some transformers internals to avoid writing a bunch of code ourselves.
-            # Might be a bit brittle...
-            transformers.modeling_utils._load_state_dict_into_meta_model(
-                module,
-                renamed_state_dict,
-                '',
-                list(renamed_state_dict.keys()),
-            )
+            for name, param in module.named_parameters():
+                if name in renamed_state_dict:
+                    set_module_tensor_to_device(module, name, device='cpu', value=renamed_state_dict[name])
 
         module.to(self.device)
         if not isinstance(self.quantization_config, transformers.BitsAndBytesConfig):
