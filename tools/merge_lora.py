@@ -40,10 +40,20 @@ if (lora_path / 'adapter_model.safetensors').exists():
 else:
     lora_state = torch.load(lora_path / 'adapter_model.bin', map_location=device)
 
+# Trim lora state
+for key in lora_state.keys():
+    if "model.layers." in key:
+        prefix = len(key.split("model.layers.", 1)[0])
+        break
+lora_state = {k[prefix:] if "model.layers." in k else k: v for k, v in lora_state.items()}
 
 def find_lora_weights(key):
     lora_A = None
     lora_B = None
+    if "model.layers." not in key:
+        return None, None
+
+    key = key[len(key.split("model.layers.", 1)[0]):]
     for lora_key, lora_weight in lora_state.items():
         if key.strip('.weight') in lora_key:
             if 'lora_A' in lora_key:
@@ -77,6 +87,7 @@ for filepath in input_path.glob('*'):
     shutil.copy(filepath, output_path)
 
 print('Merging and copying state_dict to output')
+found = 0
 for shard in (pbar := tqdm(shards)):
     tensors = {}
     with safetensors.safe_open(shard, framework='pt', device=device) as f:
@@ -85,6 +96,7 @@ for shard in (pbar := tqdm(shards)):
             tensor = f.get_tensor(key)
             lora_A, lora_B = find_lora_weights(key)
             if lora_A is not None:
+                found += 1
                 pbar.set_description(f'found lora weights for {key}: {lora_A.size()}, {lora_B.size()}')
                 old_type = tensor.dtype
                 tensor = tensor.to(torch.float32)
@@ -92,3 +104,4 @@ for shard in (pbar := tqdm(shards)):
                 tensor = tensor.to(old_type)
             tensors[key] = tensor
         safetensors.torch.save_file(tensors, output_path / shard.name, metadata=metadata)
+print(f"Applied LoRA to {found} tensors.")
