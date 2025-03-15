@@ -209,6 +209,23 @@ def combine_datasets(dataset_list, config, sample_weights):
     return dataset
 
 
+def _rejected_sampling_map_fn(example):
+    # Labels are -100 for masked tokens (the prompt).
+    label_mask = (example['labels'] == -100)
+    assert label_mask.ndim == 1
+    # index of first False
+    completion_start = torch.argmin(label_mask.to(torch.int))
+    return {
+        'rejected_input_ids': example['input_ids'][:completion_start],
+        'rejected_attention_mask': example['attention_mask'][:completion_start],
+        'rejected_labels': example['labels'][:completion_start],
+    }
+
+
+def process_dataset_for_rejected_sampling(dataset):
+    return dataset.map(_rejected_sampling_map_fn, desc='Processing dataset for negative sampling', num_proc=NUM_PROC)
+
+
 def load_datasets(config, tokenizer):
     if 'datasets' not in config:
         raise ValueError('Need to specify at least one dataset')
@@ -256,6 +273,17 @@ def load_datasets(config, tokenizer):
     else:
         with zero_first(is_main_process()):
             train_dataset = combine_datasets(train_datasets, config, sample_weights=sample_weights)
+
+    if config.get('rejected_sampling', False):
+        assert 'rl' in config
+        train_dataset = process_dataset_for_rejected_sampling(train_dataset)
+        eval_datasets = {name: process_dataset_for_rejected_sampling(ds) for name, ds in eval_datasets.items()}
+
+    if 'rl' in config:
+        assert 'rejected_input_ids' in train_dataset.column_names
+        for eval_dataset in eval_datasets.values():
+            assert 'rejected_input_ids' in eval_dataset.column_names
+
     return train_dataset, eval_datasets
 
 

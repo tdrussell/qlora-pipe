@@ -1,3 +1,5 @@
+# deepspeed --num_gpus=1 --module tools.test_sampling --config ~/code/qlora-pipe-configs/config_8b_dpo.toml
+
 import argparse
 import json
 import os.path
@@ -23,7 +25,6 @@ PROMPTS = [
     'What is the name of Sweden in Swedish?',
 ]
 
-
 parser = argparse.ArgumentParser()
 parser.add_argument('--config', help='Path to TOML configuration file.')
 parser.add_argument('--local_rank', type=int, default=-1, help='local rank passed from distributed launcher')
@@ -36,11 +37,17 @@ if __name__ == '__main__':
         config = toml.load(f)
     config['full_fine_tune'] = True
 
-    ds_config = {
-        'train_micro_batch_size_per_gpu': config.get('micro_batch_size_per_gpu', 1),
-        'gradient_accumulation_steps': config.get('gradient_accumulation_steps', 1),
-        'steps_per_print': config.get('steps_per_print', 1),
-    }
+    if hasattr(args, 'deepspeed_config') and args.deepspeed_config is not None:
+        # engine.initialize() will load deepspeed config from args
+        ds_config = None
+    else:
+        # The necessary ds_config fields are taken from the TOML config file.
+        ds_config = {
+            'train_micro_batch_size_per_gpu': config.get('micro_batch_size_per_gpu', 1),
+            'gradient_accumulation_steps': config.get('gradient_accumulation_steps', 1),
+            'gradient_clipping': config.get('gradient_clipping', 1.0),
+            'steps_per_print': config.get('steps_per_print', 1),
+        }
 
     deepspeed.init_distributed()
 

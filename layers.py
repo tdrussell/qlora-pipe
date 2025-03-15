@@ -188,6 +188,7 @@ class OutputLayer(nn.Module):
 
             # log the language modeling loss metrics on the chosen completion
             cross_entropy_loss = cross_entropy_loss[:half].flatten()[loss_mask[:half].flatten()]
+            hidden_states = hidden_states[:half]
             loss_unreduced = cross_entropy_loss
             flat_logits = logits[:half].view(-1, vocab_size)
             flat_labels = labels[:half].view(-1)

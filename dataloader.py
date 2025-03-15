@@ -21,13 +21,51 @@ from utils import is_main_process
 PAD_TO_MULTIPLE = 64
 
 
-def split_batch(batch, pieces):
-    example_tuple, labels = batch
+# Splits an example (feature dict) along the batch dimension into a list of examples.
+def split_batch(example, pieces):
+    input_ids = example['input_ids']
     if is_main_process():
-        print(f'before GAS splitting, input_ids shape: {example_tuple[0].shape}, total tokens: {example_tuple[0].numel()}')
-    split_size = example_tuple[0].size(0) // pieces
-    split_examples = zip(*(torch.split(tensor, split_size) for tensor in example_tuple))
-    return [(ex, None) for ex in split_examples]
+        print(f'before GAS splitting, input_ids shape: {input_ids.shape}, total tokens: {input_ids.numel()}')
+    input_batch_size = input_ids.size(0)
+    split_size = input_batch_size // pieces
+    examples = [{} for _ in range(pieces)]
+    for key, tensor in example.items():
+        assert tensor.size(0) == input_batch_size
+        for i, tensor_slice in enumerate(torch.split(tensor, split_size)):
+            examples[i][key] = tensor_slice
+    return examples
+
+
+# Merge lists of examples a and b, such that for each contiguous piece in the result, the first half comes from
+# a and the second half from b. Used for DPO. The splitting must match how split_batch() does it.
+def combine_piecewise(a, b, pieces):
+    assert len(a) == len(b)
+    split_size = len(a) // pieces
+    a_chunks = [a[i : i + split_size] for i in range(0, len(a), split_size)]
+    b_chunks = [b[i : i + split_size] for i in range(0, len(b), split_size)]
+    result = []
+    for a_chunk, b_chunk in zip(a_chunks, b_chunks):
+        result.extend(a_chunk)
+        result.extend(b_chunk)
+    return result
+
+
+# Flattens a list of examples with batch dimension into a list of examples with no batch dimension.
+def flatten_examples(examples):
+    result = []
+    for example in examples:
+        batch_size = example['input_ids'].size(0)
+        new_examples = [{} for _ in range(batch_size)]
+        for key, tensor in example.items():
+            assert tensor.size(0) == batch_size
+            for i, tensor_slice in enumerate(tensor):
+                new_examples[i][key] = tensor_slice
+        result.extend(new_examples)
+    return result
+
+
+def example_to_tuple(example):
+    return (example['input_ids'], example['attention_mask'], example['labels']), None
 
 
 def shuffle_list(l, seed):
@@ -40,20 +78,6 @@ def shuffle_list(l, seed):
 
 def batch_size_tokens_after_padding(batch):
     return max(math.ceil(pair[1] / PAD_TO_MULTIPLE) * PAD_TO_MULTIPLE for pair in batch) * len(batch)
-
-
-# Merge lists a and b, such that for each contiguous piece in the result, the first half comes from
-# a and the second half from b. Used for DPO. The splitting must match how split_batch() does it.
-def combine_piecewise(a, b, pieces):
-    assert len(a) == len(b)
-    split_size = len(a) // pieces
-    a_chunks = [a[i : i + split_size] for i in range(0, len(a), split_size)]
-    b_chunks = [b[i : i + split_size] for i in range(0, len(b), split_size)]
-    result = []
-    for a_chunk, b_chunk in zip(a_chunks, b_chunks):
-        result.extend(a_chunk)
-        result.extend(b_chunk)
-    return result
 
 
 # A distributed batch sampler that supports grouping by length
@@ -167,6 +191,8 @@ class PipelineDataLoader:
         group_by_length=False,
         pad_to_multiple_of=PAD_TO_MULTIPLE,
         batch_size_tokens=None,
+        return_dict=False,
+        rl=False,
     ):
         assert data_parallel_rank < data_parallel_world_size
         self.dataset = dataset
@@ -175,6 +201,8 @@ class PipelineDataLoader:
         self.batch_size_tokens = batch_size_tokens
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self.pad_to_multiple_of = pad_to_multiple_of
+        self.return_dict = return_dict
+        self.rl = rl
         self.data_sampler = DistributedBatchSamper(
             dataset=dataset,
             batch_size=self.batch_size,
@@ -185,6 +213,30 @@ class PipelineDataLoader:
             shuffle=shuffle,
             group_by_length=group_by_length,
         )
+
+        data_collator = DataCollatorForSeq2Seq(self.tokenizer, pad_to_multiple_of=self.pad_to_multiple_of)
+        def collate_fn(examples, gradient_accumulation_steps=self.gradient_accumulation_steps):
+            has_batch_dimension = examples[0]['input_ids'].ndim == 2
+            if has_batch_dimension:
+                examples = flatten_examples(examples)
+            rejected_examples = []
+            for example in examples:
+                example.pop('length', None)
+                example.pop('token_type_ids', None)
+                rejected_example = {}
+                for key in list(example.keys()):
+                    if 'rejected_' in key:
+                        x = example.pop(key)
+                        # Just drop the rejected_ entries if not doing RL. This allows normal SFT on just the
+                        # accepted completions of a RL dataset.
+                        if self.rl:
+                            rejected_example[key.strip('rejected_')] = x
+                if rejected_example:
+                    rejected_examples.append(rejected_example)
+            if rejected_examples:
+                examples = combine_piecewise(examples, rejected_examples, gradient_accumulation_steps)
+            return data_collator(examples)
+        self.collate_fn = collate_fn
 
         self.epoch = 1
         self.num_batches_pulled = 0
@@ -224,36 +276,21 @@ class PipelineDataLoader:
     def _pull_batches_from_dataloader(self):
         for batch in self.dataloader:
             self.num_batches_pulled += 1
-            yield from split_batch(batch, self.gradient_accumulation_steps)
+            for micro_batch in split_batch(batch, self.gradient_accumulation_steps):
+                if self.return_dict:
+                    yield micro_batch
+                else:
+                    # input to pipeline is (input_ids, attention_mask, labels)
+                    # this needs to return (features, labels)
+                    # it is OK if labels is None (the model just returns the loss anyway)
+                    yield example_to_tuple(micro_batch)
 
     def _create_dataloader(self):
-        data_collator = DataCollatorForSeq2Seq(self.tokenizer, pad_to_multiple_of=self.pad_to_multiple_of)
-
-        def collate_fn(examples):
-            rejected_examples = []
-            for example in examples:
-                del example['length']
-                if 'token_type_ids' in example:
-                    del example['token_type_ids']
-                rejected_example = {}
-                for key in list(example.keys()):
-                    if 'rejected_' in key:
-                        rejected_example[key.strip('rejected_')] = example.pop(key)
-                if rejected_example:
-                    rejected_examples.append(rejected_example)
-            if rejected_examples:
-                examples = combine_piecewise(examples, rejected_examples, self.gradient_accumulation_steps)
-            batch = data_collator(examples)
-            # input to pipeline is (input_ids, attention_mask, labels)
-            # this needs to return (features, labels)
-            # it is OK if labels is None (the model just returns the loss anyway)
-            return ((batch['input_ids'], batch['attention_mask'], batch['labels']), None)
-
         self.dataloader = DataLoader(
             self.dataset,
             pin_memory=True,
             batch_sampler=self.data_sampler,
-            collate_fn=collate_fn,
+            collate_fn=self.collate_fn,
         )
 
     def state_dict(self):

@@ -1,4 +1,5 @@
 from collections import deque
+import time
 
 import deepspeed
 import torch
@@ -38,7 +39,8 @@ from deepspeed.runtime.pipe.topology import ProcessTopology
 from deepspeed.runtime.utils import PartitionedTensor
 from torch import nn
 
-from utils import eta_str, log
+from utils import eta_str, log, is_main_process
+from dataloader import split_batch, example_to_tuple
 
 
 def initialize(
@@ -69,6 +71,16 @@ def initialize(
     return engine, engine.optimizer
 
 
+def unpack_accepted_rejected(example):
+    batch_size = example['input_ids'].size(0)
+    half = batch_size // 2
+    for key, tensor in list(example.items()):
+        assert tensor.size(0) == batch_size
+        example[key] = tensor[:half]
+        example['rejected_'+key] = tensor[half:]
+    return example
+
+
 class LoadMicroBatchMultipleBuffers(PipeInstruction):
     def __init__(self, *buffer_ids, **kwargs):
         super().__init__(buffer_ids=buffer_ids, **kwargs)
@@ -87,6 +99,7 @@ class CustomPipelineEngine(PipelineEngine):
         # Assign list to avoid registering the nn.Module
         self.lora_model = [lora_model]
         self.tokenizer = tokenizer
+        self.rejected_sampling = False
         eos_token_ids = set()
         if self.tokenizer is not None and self.tokenizer.eos_token_id is not None:
             eos_token_ids.add(self.tokenizer.eos_token_id)
@@ -101,24 +114,49 @@ class CustomPipelineEngine(PipelineEngine):
     def configure_rl(self, rl_config):
         self.rl_config = rl_config
 
+
+    def enable_rejected_sampling(self, enabled):
+        self.rejected_sampling = enabled
+
+
+    def set_dataloader(self, loader):
+        self.collate_fn = loader.collate_fn
+        if self.is_first_stage() or self.is_last_stage():
+            self.training_dataloader = loader
+            self.data_iterator = iter(self.training_dataloader)
+
+
     def train_batch(self):
         if not torch._C.is_grad_enabled():
-            raise RuntimeError('train_batch() requires gradients enabled. Use eval_batch() instead.')
+            raise RuntimeError(f'train_batch() requires gradients enabled. Use eval_batch() instead.')
+        self.timers(TRAIN_BATCH_TIMER).start()
 
         # sequence length may change between macro batches (but not between gradient accumulation steps)
         self.reset_activation_shape()
+
+        train_iterator = self.data_iterator
+
+        # Negative sampling
+        if self.rejected_sampling:
+            assert self.rl_config
+            self.module.eval()
+            model_inputs = self._sample_from_iterator(train_iterator, self.collate_fn)
+            dist.barrier()
+            self.set_dataiterator(iter(model_inputs))
+            self.reset_activation_shape()
 
         self.module.train()
         self._compute_loss = True
 
         # Do the work
-        self.timers(TRAIN_BATCH_TIMER).start()
-        if self.rl_config.get('method', None) == 'dpo':
-            sched = DPOTrainSchedule(micro_batches=self.micro_batches, stages=self.num_stages, stage_id=self.stage_id)
+        if self.rl_config:
+            method = self.rl_config.get('method', None)
+            if method == 'dpo':
+                sched = DPOTrainSchedule(micro_batches=self.micro_batches, stages=self.num_stages, stage_id=self.stage_id)
+            else:
+                raise NotImplementedError(method)
         else:
-            sched = schedule.TrainSchedule(
-                micro_batches=self.micro_batches, stages=self.num_stages, stage_id=self.stage_id
-            )
+            sched = schedule.TrainSchedule(micro_batches=self.micro_batches, stages=self.num_stages, stage_id=self.stage_id)
         self._exec_schedule(sched)
         agg_losses = self._aggregate_total_losses()
         # Actual training loss is always the first item.
@@ -163,6 +201,12 @@ class CustomPipelineEngine(PipelineEngine):
                 ]
             )
 
+        # Restore the training iterator
+        self.set_dataiterator(train_iterator)
+
+        # Restore the training iterator
+        self.set_dataiterator(train_iterator)
+
         return agg_losses
 
     def eval_batch(self, data_iter):
@@ -176,11 +220,21 @@ class CustomPipelineEngine(PipelineEngine):
         train_iterator = self.data_iterator
         self.set_dataiterator(data_iter)
 
+        # Negative sampling
+        if self.rejected_sampling:
+            assert self.rl_config
+            dist.barrier()
+            model_inputs = self._sample_from_iterator(data_iter, self.collate_fn)
+            self.set_dataiterator(iter(model_inputs))
+            self.reset_activation_shape()
+
         # Do the work
-        if self.rl_config.get('method', None) == 'dpo':
-            sched = DPOInferenceSchedule(
-                micro_batches=self.micro_batches, stages=self.num_stages, stage_id=self.stage_id
-            )
+        if self.rl_config:
+            method = self.rl_config.get('method', None)
+            if method == 'dpo':
+                sched = DPOInferenceSchedule(micro_batches=self.micro_batches, stages=self.num_stages, stage_id=self.stage_id)
+            else:
+                raise NotImplementedError(method)
         else:
             sched = schedule.InferenceSchedule(
                 micro_batches=self.micro_batches, stages=self.num_stages, stage_id=self.stage_id
@@ -209,7 +263,6 @@ class CustomPipelineEngine(PipelineEngine):
         self.reset_activation_shape()
         self.module.eval()
         self.module.set_sampling_mode(True)
-        train_iterator = self.data_iterator
         original_micro_batches = self.micro_batches
         self.micro_batches = len(prompts)
         dist.barrier()
@@ -227,10 +280,32 @@ class CustomPipelineEngine(PipelineEngine):
         with torch.no_grad():
             examples = self._exec_sampling_schedule(examples, max_new_tokens=max_new_tokens)
         text = [self.tokenizer.batch_decode(example['input_ids']) for example in examples]
-        self.set_dataiterator(train_iterator)
         self.micro_batches = original_micro_batches
         self.module.set_sampling_mode(False)
         return text
+
+
+    def _sample_from_iterator(self, data_iter, collate_fn):
+        examples = [unpack_accepted_rejected(next(data_iter)) for _ in range(self.micro_batches)]
+        self.module.eval()
+        self.module.set_sampling_mode(True)
+        dist.barrier()
+        with torch.no_grad():
+            # TODO: allow configuring this
+            max_total_tokens = max(example['input_ids'].size(1) for example in examples) * 2
+            examples = self._exec_sampling_schedule(examples, feature_prefix='rejected_', max_total_tokens=max_total_tokens)
+        if is_main_process():
+            input_ids = examples[0]['rejected_input_ids'][0]
+            attention_mask = examples[0]['rejected_attention_mask'][0]
+            start = torch.argmax(attention_mask)
+            end = len(attention_mask) - torch.argmax(torch.flip(attention_mask, (0,)))
+            text = self.tokenizer.decode(input_ids[start:end])
+            print(f'Example of sampled rejected completion:\n{text}')
+        self.module.set_sampling_mode(False)
+        batch = collate_fn(examples, gradient_accumulation_steps=self.micro_batches)
+        model_inputs = [example_to_tuple(micro_batch) for micro_batch in split_batch(batch, self.micro_batches)]
+        return model_inputs
+
 
     def _aggregate_total_losses(self):
         all_agg_outputs = []
@@ -566,14 +641,19 @@ class CustomPipelineEngine(PipelineEngine):
     def _valid_micro_batch(self, micro_batch_id):
         return 0 <= micro_batch_id < self.micro_batches
 
-    def _exec_sampling_schedule(self, examples, max_new_tokens=1e9):
+
+    def _exec_sampling_schedule(self, examples, feature_prefix='', max_new_tokens=1e9, max_total_tokens=1e9):
         assert isinstance(examples, list) and len(examples) > 0
+        start = time.time()
+        input_ids_key = f'{feature_prefix}input_ids'
+        attention_mask_key = f'{feature_prefix}attention_mask'
+        labels_key = f'{feature_prefix}labels'
         # Reserve and reset buffers.
         self._reserve_pipe_buffers(2)
         self.fwd_outputs = []
         eos_token_ids = torch.tensor(list(self.eos_token_ids))
         for example in examples:
-            example['done'] = torch.tensor([False] * example['input_ids'].size(0))
+            example['done'] = torch.tensor([False]*example[input_ids_key].size(0))
             example['num_new_tokens'] = 0
         num_batches_done = 0
         num_batches = len(examples)
@@ -581,16 +661,11 @@ class CustomPipelineEngine(PipelineEngine):
         if self.is_first_stage():
             queue = deque()
             for i, example in enumerate(examples):
-                queue.append(
-                    (
-                        i,
-                        {
-                            'input_ids': example['input_ids'],
-                            'attention_mask': example['attention_mask'],
-                            'micro_batch_id': torch.tensor(i),
-                        },
-                    )
-                )
+                queue.append((i, {
+                    'input_ids': example[input_ids_key],
+                    'attention_mask': example[attention_mask_key],
+                    'micro_batch_id': torch.tensor(i),
+                }))
 
         step_id = 0
         prev_micro_batch_id = -1
@@ -606,33 +681,40 @@ class CustomPipelineEngine(PipelineEngine):
 
             # Send prev_micro_batch_id to next stage. Last stage wraps around and sends to first stage.
             micro_batch_id = self._exec_send_micro_batch_id(prev_micro_batch_id)
-            batch_size = examples[micro_batch_id]['input_ids'].size(0)
+            example = examples[micro_batch_id]
+            batch_size = example[input_ids_key].size(0)
 
             # If last stage did a forward pass, send the sampled input_ids to the first stage.
             if self.is_first_stage() and self._valid_micro_batch(micro_batch_id):
+                # Check stopping conditions before appending the new token, so that all batches can reach the token limit before we break.
+                if example['num_new_tokens'] >= max_new_tokens:
+                    break
+                if example[input_ids_key].size(1) >= max_total_tokens:
+                    break
+
                 if self.num_stages > 1:
                     input_ids = torch.tensor([[-1] * batch_size])
                     p2p.recv(input_ids, self.num_stages - 1)
                 assert input_ids.size(-1) == 1
+
                 input_ids = input_ids.to('cpu')
-                prev_done = examples[micro_batch_id]['done']
+                prev_done = example['done']
                 # Determine which items in the batch are done generating.
                 done = prev_done | (input_ids == eos_token_ids).any(-1)
-                examples[micro_batch_id]['done'] = done
+                example['done'] = done
                 batch_done = done.all().item()
                 # Output pad token and 0 attention mask for items in the batch that are already done.
                 prev_done_reshaped = prev_done.unsqueeze(-1)
                 input_ids = torch.where(prev_done_reshaped, self.tokenizer.pad_token_id, input_ids)
                 attention_mask_extension = torch.where(prev_done_reshaped, 0, 1)
-                input_ids = torch.cat([examples[micro_batch_id]['input_ids'], input_ids], dim=-1)
-                examples[micro_batch_id]['input_ids'] = input_ids
-                attention_mask = torch.cat(
-                    [examples[micro_batch_id]['attention_mask'], attention_mask_extension], dim=-1
-                )
-                examples[micro_batch_id]['attention_mask'] = attention_mask
-                examples[micro_batch_id]['num_new_tokens'] += 1
-                if examples[micro_batch_id]['num_new_tokens'] >= max_new_tokens:
-                    break
+                labels_extention = torch.where(prev_done_reshaped, -100, input_ids)
+                input_ids = torch.cat([example[input_ids_key], input_ids], dim=-1)
+                example[input_ids_key] = input_ids
+                if labels_key in example:
+                    example[labels_key] = torch.cat([example[labels_key], labels_extention], dim=-1)
+                attention_mask = torch.cat([example[attention_mask_key], attention_mask_extension], dim=-1)
+                example[attention_mask_key] = attention_mask
+                example['num_new_tokens'] += 1
                 if batch_done:
                     num_batches_done += 1
                 else:
@@ -680,9 +762,17 @@ class CustomPipelineEngine(PipelineEngine):
             if num_batches_done == num_batches:
                 break
 
+        total_new_tokens = 0
         for example in examples:
+            total_new_tokens += example['num_new_tokens'] * batch_size
             del example['done']
             del example['num_new_tokens']
+
+        if is_main_process():
+            duration = time.time() - start
+            tps = total_new_tokens / duration
+            print(f'Average tok/s: {tps:.1f}')
+
         return examples
 
     # make our forward pass method apply
