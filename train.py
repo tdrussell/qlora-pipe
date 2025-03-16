@@ -474,7 +474,9 @@ if __name__ == '__main__':
 
     bitsandbytes.nn.modules.Params4bit.cuda = bnb_cuda_hijack
 
-    pipeline_model, lora_model, lora_config = load_pipeline_model_with_lora(config, model_type)
+    rejected_sampling = config.get('rejected_sampling', False)
+    # TODO: make rejected sampling work with dynamic_shape=False
+    pipeline_model, lora_model, lora_config = load_pipeline_model_with_lora(config, model_type, dynamic_shape=rejected_sampling)
 
     parameters_to_train = [p for p in pipeline_model.parameters() if p.requires_grad]
 
@@ -525,7 +527,7 @@ if __name__ == '__main__':
     )
     if rl_config := config.get('rl', None):
         model_engine.configure_rl(rl_config)
-    model_engine.enable_rejected_sampling(config.get('rejected_sampling', False))
+    model_engine.enable_rejected_sampling(rejected_sampling)
 
     # TODO: I have recently realized that we are setting things to fp16/bf16, even though all the DS
     # config was not in fp16 / bf16 mode. DS being in fp16/bf16 changes things in many places, e.g.
@@ -547,7 +549,6 @@ if __name__ == '__main__':
                 module.move_mlp_to_cpu()
         torch.cuda.empty_cache()
 
-    dataloader_return_dict = config.get('rejected_sampling', False)
     train_dataloader = dataloader.PipelineDataLoader(
         train_data,
         tokenizer,
@@ -557,7 +558,7 @@ if __name__ == '__main__':
         model_engine.grid.get_data_parallel_rank(),
         group_by_length=False if 'group_by_length' not in config else config['group_by_length'],
         batch_size_tokens=None if 'batch_size_tokens' not in config else config['batch_size_tokens'],
-        return_dict=dataloader_return_dict,
+        return_dict=rejected_sampling,
         rl=(rl_config is not None),
     )
     model_engine.set_dataloader(train_dataloader)
@@ -663,7 +664,7 @@ if __name__ == '__main__':
             shuffle=False,
             group_by_length=False if 'group_by_length' not in config else config['group_by_length'],
             batch_size_tokens=None if 'batch_size_tokens' not in config else config['batch_size_tokens'],
-            return_dict=dataloader_return_dict,
+            return_dict=rejected_sampling,
             rl=(rl_config is not None),
         )
         for name, eval_data in eval_data_map.items()

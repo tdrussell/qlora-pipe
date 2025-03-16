@@ -11,7 +11,7 @@ import transformers
 
 import engine
 from train import load_pipeline_model_with_lora
-from utils import DTYPE_MAP
+from utils import DTYPE_MAP, is_main_process
 
 
 PROMPT_FORMAT = """<|start_header_id|>user<|end_header_id|>
@@ -91,7 +91,9 @@ if __name__ == '__main__':
     model_engine.communication_data_type = weight_dtype
 
     prompts = [PROMPT_FORMAT.format(prompt) for prompt in PROMPTS]
-    # prompts = [[PROMPT_FORMAT.format(prompt) for prompt in PROMPTS]]
-    for text in model_engine.sample_batch(prompts):
-        print(text)
-        print('-' * 80)
+    #prompts = [[PROMPT_FORMAT.format(prompt) for prompt in PROMPTS]]
+    outputs = model_engine.sample_batch(prompts, max_new_tokens=1000)
+    if is_main_process():
+        for text in outputs:
+            print(text)
+            print('-' * 80)

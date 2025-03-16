@@ -303,9 +303,6 @@ class InputLayer(nn.Module):
         use_cache = self.model.sampling_mode
 
         input_ids, attention_mask, labels = inputs[:3]
-        if self.model.sampling_mode:
-            micro_batch_id = inputs[3].item()
-            self.model.set_cache(micro_batch_id)
         device = input_ids.device
         if self.embedding_on_cpu:
             self.embed_tokens.to('cpu')
@@ -322,14 +319,9 @@ class InputLayer(nn.Module):
         position_ids = cache_position.unsqueeze(0)
 
         original_attention_mask = attention_mask
-        if self.model.model.config.model_type == 'mistral':
-            attention_mask = self.model.model._update_causal_mask(
-                attention_mask, inputs_embeds, cache_position, past_key_values, None
-            )
-        else:
-            attention_mask = self.model.model._update_causal_mask(
-                attention_mask, inputs_embeds, cache_position, past_key_values, None
-            )
+        attention_mask = self.model.model._update_causal_mask(
+            attention_mask, inputs_embeds, cache_position, past_key_values, None
+        )
         if attention_mask is None:
             # With FA, attention_mask can end up being None. But with deepspeed we can't pass None
             # between GPUs. So force it back to the original attention_mask.
@@ -509,9 +501,6 @@ class Gemma3InputLayer(nn.Module):
         use_cache = self.model.sampling_mode
 
         input_ids, attention_mask, labels = inputs[:3]
-        if self.model.sampling_mode:
-            micro_batch_id = inputs[3].item()
-            self.model.set_cache(micro_batch_id)
         device = input_ids.device
         if self.embedding_on_cpu:
             self.embed_tokens.to('cpu')

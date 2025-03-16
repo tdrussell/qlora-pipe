@@ -24,6 +24,7 @@ class PipelineModel(nn.Module):
         if config['full_fine_tune'] and model_config.tie_word_embeddings:
             raise NotImplementedError('FFT is not supported for models with tied embeddings')
         self.train_config = config
+        self.model_config = model_config
         self.modules_to_not_quantize = get_keys_to_not_convert(self)
         self.loader_util = LoaderUtil(config['model'], quantization_config, self.modules_to_not_quantize)
         self.loss_type = config.get('loss_type', 'cross_entropy_loss').lower()
@@ -34,7 +35,6 @@ class PipelineModel(nn.Module):
             print(f"Optimizing using '{self.loss_type}' with gamma={self.focal_loss_gamma}")
         self.dpo_reference_mode = False
         self.sampling_mode = False
-        self.cache = None
 
         for name, p in self.named_parameters():
             p.original_name = name
@@ -50,6 +50,18 @@ class PipelineModel(nn.Module):
         self.sampling_mode = sampling_mode
         # Reset cache when sampling mode is modified. This ensures it's initialized and also clears memory at the end.
         self.cache_dict = defaultdict(transformers.DynamicCache)
+        # We could try to use static cache at some point. During early testing with relatively short sequence lengths,
+        # it was the same sampling speed as DynamicCache. Note: will need to pass cache_position in transformer layer
+        # if using StaticCache.
+        # def make_static_cache():
+        #     return transformers.StaticCache(
+        #         self.model_config,
+        #         max_batch_size=1,
+        #         max_cache_len=1024,
+        #         device='cuda',
+        #         dtype=self.dtype,
+        #     )
+        # self.cache_dict = defaultdict(make_static_cache)
 
     def set_cache(self, micro_batch_id):
         self.cache = self.cache_dict[micro_batch_id]
