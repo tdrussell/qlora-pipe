@@ -516,6 +516,10 @@ if __name__ == '__main__':
             )
         return optimizer_cls(**optimizer_kwargs)
 
+    kwargs = {}
+    if sampling_settings := config.get('sampling', None):
+        for k, v in sampling_settings.items():
+            kwargs['sampling_' + k] = v
     model_engine, optimizer = engine.initialize(
         args=args,
         model=pipeline_model,
@@ -524,6 +528,7 @@ if __name__ == '__main__':
         lora_model=lora_model,
         config=ds_config,
         tokenizer=tokenizer,
+        **kwargs,
     )
     if rl_config := config.get('rl', None):
         model_engine.configure_rl(rl_config)

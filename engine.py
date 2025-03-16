@@ -3,6 +3,7 @@ import time
 
 import deepspeed
 import torch
+import transformers
 from deepspeed import comm as dist
 from deepspeed.accelerator import get_accelerator
 from deepspeed.runtime import utils as ds_utils
@@ -44,7 +45,7 @@ from dataloader import split_batch, example_to_tuple
 
 
 def initialize(
-    args=None, model=None, model_parameters=None, optimizer=None, lora_model=None, config=None, tokenizer=None
+    args=None, model=None, config=None, **kwargs
 ):
     assert model is not None, 'deepspeed.initialize requires a model'
 
@@ -59,13 +60,10 @@ def initialize(
     engine = CustomPipelineEngine(
         args=args,
         model=model,
-        optimizer=optimizer,
-        model_parameters=model_parameters,
         mpu=mpu,
         config=config,
         config_class=config_class,
-        lora_model=lora_model,
-        tokenizer=tokenizer,
+        **kwargs,
     )
 
     return engine, engine.optimizer
@@ -91,7 +89,16 @@ class ReferenceLogitsForwardPass(BufferOpInstruction):
 
 
 class CustomPipelineEngine(PipelineEngine):
-    def __init__(self, *args, lora_model=None, tokenizer=None, **kwargs):
+    def __init__(
+        self,
+        *args,
+        lora_model=None,
+        tokenizer=None,
+        sampling_temperature=1.0,
+        sampling_min_p=0,
+        sampling_temperature_last=False,
+        **kwargs
+    ):
         super().__init__(*args, **kwargs)
         self.total_steps = None
         self.etas = deque()
@@ -110,6 +117,17 @@ class CustomPipelineEngine(PipelineEngine):
                 model_eos_token_ids = [model_eos_token_ids]
             eos_token_ids.update(model_eos_token_ids)
         self.eos_token_ids = eos_token_ids
+
+        # Sampling configuration. Only supports logits processors that don't use input_ids.
+        self.logits_processor = transformers.LogitsProcessorList()
+        temp = transformers.TemperatureLogitsWarper(sampling_temperature)
+        if sampling_min_p > 0:
+            self.logits_processor.append(transformers.MinPLogitsWarper(sampling_min_p))
+        if sampling_temperature_last:
+            self.logits_processor.append(temp)
+        else:
+            self.logits_processor.insert(0, temp)
+
 
     def configure_rl(self, rl_config):
         self.rl_config = rl_config
@@ -640,8 +658,10 @@ class CustomPipelineEngine(PipelineEngine):
         self.pipe_buffers['outputs'][buffer_id] = outputs
 
     def _sample_from_logits(self, buffer_id):
-        logits = self.pipe_buffers['outputs'][buffer_id]
-        input_ids = torch.argmax(logits, dim=-1)
+        logits = self.pipe_buffers['outputs'][buffer_id].squeeze(1)
+        logits = self.logits_processor(None, logits)
+        probs = torch.nn.functional.softmax(logits, dim=-1)
+        input_ids = torch.multinomial(probs, num_samples=1).squeeze(1)
         return input_ids
 
     def _valid_stage(self, stage_id):
