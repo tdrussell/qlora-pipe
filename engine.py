@@ -661,7 +661,9 @@ class CustomPipelineEngine(PipelineEngine):
         logits = self.pipe_buffers['outputs'][buffer_id].squeeze(1)
         logits = self.logits_processor(None, logits)
         probs = torch.nn.functional.softmax(logits, dim=-1)
-        input_ids = torch.multinomial(probs, num_samples=1).squeeze(1)
+        input_ids = torch.multinomial(probs, num_samples=1)
+        # Logically you would squeeze(1) to remove the multinomial num_samples dimension, then
+        # unsqueeze(1) to add back the sequence_length dimension. But those just cancel out.
         return input_ids
 
     def _valid_stage(self, stage_id):
