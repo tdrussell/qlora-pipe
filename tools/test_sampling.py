@@ -77,22 +77,26 @@ if __name__ == '__main__':
 
     bitsandbytes.nn.modules.Params4bit.cuda = bnb_cuda_hijack
 
-    # TODO: make it work with dynamic_shape=False for better performance.
-    pipeline_model, lora_model, lora_config = load_pipeline_model_with_lora(config, model_type, dynamic_shape=True)
+    pipeline_model, lora_model, lora_config = load_pipeline_model_with_lora(config, model_type)
 
+    kwargs = {}
+    if sampling_settings := config.get('sampling', None):
+        for k, v in sampling_settings.items():
+            kwargs['sampling_' + k] = v
     model_engine, _ = engine.initialize(
         args=args,
         model=pipeline_model,
         lora_model=lora_model,
         config=ds_config,
         tokenizer=tokenizer,
+        **kwargs,
     )
     weight_dtype = DTYPE_MAP[config.get('lora_weight_dtype', config.get('model_weight_dtype', 'float32'))]
     model_engine.communication_data_type = weight_dtype
 
     prompts = [PROMPT_FORMAT.format(prompt) for prompt in PROMPTS]
     #prompts = [[PROMPT_FORMAT.format(prompt) for prompt in PROMPTS]]
-    outputs = model_engine.sample_batch(prompts, max_new_tokens=1000)
+    outputs = model_engine.sample_batch(prompts, max_new_tokens=500)
     if is_main_process():
         for text in outputs:
             print(text)

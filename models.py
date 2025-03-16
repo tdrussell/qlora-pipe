@@ -18,6 +18,8 @@ from layers import (
 from pipeline_model import PipelineModel
 from utils import DTYPE_MAP
 
+DEFAULT_ATTN_IMPLEMENTATION = 'flash_attention_2'
+
 
 # A little bit of inheritance and MRO trickery since LlamaForCausalLM.__init__ only takes a
 # positional argument. We inherit PipelineModel first, but call LlamaForCausalLM init first,
@@ -25,7 +27,7 @@ from utils import DTYPE_MAP
 class LlamaForCausalLMPipe(PipelineModel, transformers.LlamaForCausalLM):
     def __init__(self, config, quantization_config):
         model_config = transformers.LlamaConfig.from_pretrained(config['model'])
-        model_config._attn_implementation = 'flash_attention_2'
+        model_config._attn_implementation = config.get('attn_implementation', DEFAULT_ATTN_IMPLEMENTATION)
         torch.set_default_dtype(DTYPE_MAP[config.get('model_weight_dtype', 'bfloat16')])
         with accelerate.init_empty_weights():
             transformers.LlamaForCausalLM.__init__(self, model_config)
@@ -57,7 +59,7 @@ class LlamaForCausalLMPipe(PipelineModel, transformers.LlamaForCausalLM):
 class Qwen2ForCausalLMPipe(PipelineModel, transformers.Qwen2ForCausalLM):
     def __init__(self, config, quantization_config):
         model_config = transformers.Qwen2Config.from_pretrained(config['model'])
-        model_config._attn_implementation = 'flash_attention_2'
+        model_config._attn_implementation = config.get('attn_implementation', DEFAULT_ATTN_IMPLEMENTATION)
         torch.set_default_dtype(DTYPE_MAP[config.get('model_weight_dtype', 'bfloat16')])
         with accelerate.init_empty_weights():
             transformers.Qwen2ForCausalLM.__init__(self, model_config)
@@ -86,7 +88,7 @@ class Qwen2ForCausalLMPipe(PipelineModel, transformers.Qwen2ForCausalLM):
 class CohereForCausalLMPipe(PipelineModel, transformers.CohereForCausalLM):
     def __init__(self, config, quantization_config):
         model_config = transformers.CohereConfig.from_pretrained(config['model'])
-        model_config._attn_implementation = 'flash_attention_2'
+        model_config._attn_implementation = config.get('attn_implementation', DEFAULT_ATTN_IMPLEMENTATION)
         torch.set_default_dtype(DTYPE_MAP[config.get('model_weight_dtype', 'bfloat16')])
         with accelerate.init_empty_weights():
             transformers.CohereForCausalLM.__init__(self, model_config)
@@ -120,7 +122,7 @@ class CohereForCausalLMPipe(PipelineModel, transformers.CohereForCausalLM):
 class Phi3ForCausalLMPipe(PipelineModel, transformers.Phi3ForCausalLM):
     def __init__(self, config, quantization_config):
         model_config = transformers.Phi3Config.from_pretrained(config['model'])
-        model_config._attn_implementation = 'flash_attention_2'
+        model_config._attn_implementation = config.get('attn_implementation', DEFAULT_ATTN_IMPLEMENTATION)
         torch.set_default_dtype(DTYPE_MAP[config.get('model_weight_dtype', 'bfloat16')])
         with accelerate.init_empty_weights():
             transformers.Phi3ForCausalLM.__init__(self, model_config)
@@ -148,8 +150,7 @@ class Phi3ForCausalLMPipe(PipelineModel, transformers.Phi3ForCausalLM):
 class Gemma2ForCausalLMPipe(PipelineModel, transformers.Gemma2ForCausalLM):
     def __init__(self, config, quantization_config):
         model_config = transformers.Gemma2Config.from_pretrained(config['model'])
-        # TODO: change this when Gemma works with other attn implementations
-        model_config._attn_implementation = 'eager'
+        model_config._attn_implementation = config.get('attn_implementation', DEFAULT_ATTN_IMPLEMENTATION)
         torch.set_default_dtype(DTYPE_MAP[config.get('model_weight_dtype', 'bfloat16')])
         with accelerate.init_empty_weights():
             transformers.Gemma2ForCausalLM.__init__(self, model_config)
@@ -184,7 +185,7 @@ class Gemma2ForCausalLMPipe(PipelineModel, transformers.Gemma2ForCausalLM):
 class MistralForCausalLMPipe(PipelineModel, transformers.MistralForCausalLM):
     def __init__(self, config, quantization_config):
         model_config = transformers.MistralConfig.from_pretrained(config['model'])
-        model_config._attn_implementation = 'flash_attention_2'
+        model_config._attn_implementation = config.get('attn_implementation', DEFAULT_ATTN_IMPLEMENTATION)
         torch.set_default_dtype(DTYPE_MAP[config.get('model_weight_dtype', 'bfloat16')])
         with accelerate.init_empty_weights():
             transformers.MistralForCausalLM.__init__(self, model_config)
@@ -212,7 +213,7 @@ class MistralForCausalLMPipe(PipelineModel, transformers.MistralForCausalLM):
 class MixtralForCausalLMPipe(PipelineModel, transformers.MixtralForCausalLM):
     def __init__(self, config, quantization_config):
         model_config = transformers.MixtralConfig.from_pretrained(config['model'])
-        model_config._attn_implementation = 'flash_attention_2'
+        model_config._attn_implementation = config.get('attn_implementation', DEFAULT_ATTN_IMPLEMENTATION)
         torch.set_default_dtype(DTYPE_MAP[config.get('model_weight_dtype', 'bfloat16')])
         with accelerate.init_empty_weights():
             transformers.MixtralForCausalLM.__init__(self, model_config)
@@ -246,7 +247,7 @@ class MixtralForCausalLMPipe(PipelineModel, transformers.MixtralForCausalLM):
 class Gemma3ForCausalLMPipe(PipelineModel, transformers.Gemma3ForCausalLM):
     def __init__(self, config, quantization_config):
         model_config = transformers.Gemma3TextConfig.from_pretrained(config['model'])
-        model_config._attn_implementation = 'flash_attention_2'
+        model_config._attn_implementation = config.get('attn_implementation', DEFAULT_ATTN_IMPLEMENTATION)
         torch.set_default_dtype(DTYPE_MAP[config.get('model_weight_dtype', 'bfloat16')])
         with accelerate.init_empty_weights():
             transformers.Gemma3ForCausalLM.__init__(self, model_config)

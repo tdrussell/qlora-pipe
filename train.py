@@ -246,7 +246,7 @@ def one_at_a_time():
         deepspeed.comm.barrier()
 
 
-def load_pipeline_model_with_lora(config, model_type, dynamic_shape=False):
+def load_pipeline_model_with_lora(config, model_type):
     full_fine_tune = config['full_fine_tune']
 
     if config.get('quantization', None):
@@ -326,7 +326,7 @@ def load_pipeline_model_with_lora(config, model_type, dynamic_shape=False):
             partition_method=partition_method,
             use_column_major_topology=config.get('use_column_major_topology', False),
             model=model,
-            dynamic_shape=dynamic_shape,
+            dynamic_shape=True,
         )
     else:
         pipeline_model = engine.CustomPipelineModule(
@@ -474,9 +474,7 @@ if __name__ == '__main__':
 
     bitsandbytes.nn.modules.Params4bit.cuda = bnb_cuda_hijack
 
-    rejected_sampling = config.get('rejected_sampling', False)
-    # TODO: make rejected sampling work with dynamic_shape=False
-    pipeline_model, lora_model, lora_config = load_pipeline_model_with_lora(config, model_type, dynamic_shape=rejected_sampling)
+    pipeline_model, lora_model, lora_config = load_pipeline_model_with_lora(config, model_type)
 
     parameters_to_train = [p for p in pipeline_model.parameters() if p.requires_grad]
 
@@ -532,6 +530,7 @@ if __name__ == '__main__':
     )
     if rl_config := config.get('rl', None):
         model_engine.configure_rl(rl_config)
+    rejected_sampling = config.get('rejected_sampling', False)
     model_engine.enable_rejected_sampling(rejected_sampling)
 
     # TODO: I have recently realized that we are setting things to fp16/bf16, even though all the DS

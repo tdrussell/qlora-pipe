@@ -318,17 +318,14 @@ class InputLayer(nn.Module):
         )
         position_ids = cache_position.unsqueeze(0)
 
-        original_attention_mask = attention_mask
         attention_mask = self.model.model._update_causal_mask(
             attention_mask, inputs_embeds, cache_position, past_key_values, None
         )
         if attention_mask is None:
-            # With FA, attention_mask can end up being None. But with deepspeed we can't pass None
-            # between GPUs. So force it back to the original attention_mask.
-            # TODO: with pipeline parallelism all tensors have to be the same shape between micro batches.
-            # Can we handle None attention_mask better? Sending empty tensor and converting it later will not
-            # work, due to static shape constraints. Maybe fill the original attention mask with some signal value?
-            attention_mask = original_attention_mask
+            # attention_mask can end up being None, which means use full causal attention. But with pipeline parallelism,
+            # we can only pass tensors between layers. So make it an empty tensor, which will later be detected by the layers
+            # and converted back to None. Note: this only works now because dynamic_shape=True in the pipeline engine.
+            attention_mask = torch.tensor([])
         hidden_states = inputs_embeds
         if self.model.model.config.model_type == 'gemma2':
             normalizer = torch.tensor(self.model.model.config.hidden_size**0.5, dtype=hidden_states.dtype)
@@ -516,17 +513,14 @@ class Gemma3InputLayer(nn.Module):
         )
         position_ids = cache_position.unsqueeze(0)
 
-        original_attention_mask = attention_mask
         attention_mask = self.model.model._update_causal_mask(
             attention_mask, inputs_embeds, cache_position, past_key_values, None
         )
         if attention_mask is None:
-            # With FA, attention_mask can end up being None. But with deepspeed we can't pass None
-            # between GPUs. So force it back to the original attention_mask.
-            # TODO: with pipeline parallelism all tensors have to be the same shape between micro batches.
-            # Can we handle None attention_mask better? Sending empty tensor and converting it later will not
-            # work, due to static shape constraints. Maybe fill the original attention mask with some signal value?
-            attention_mask = original_attention_mask
+            # attention_mask can end up being None, which means use full causal attention. But with pipeline parallelism,
+            # we can only pass tensors between layers. So make it an empty tensor, which will later be detected by the layers
+            # and converted back to None. Note: this only works now because dynamic_shape=True in the pipeline engine.
+            attention_mask = torch.tensor([])
         hidden_states = inputs_embeds
         if self.model.model.config.model_type == 'gemma2':
             normalizer = torch.tensor(self.model.model.config.hidden_size**0.5, dtype=hidden_states.dtype)
