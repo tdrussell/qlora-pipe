@@ -889,6 +889,7 @@ class DPOTrainSchedule(PipeSchedule):
         prev_micro_batch_id = -1
         total_steps = 2 * (self.micro_batches + self.stages - 1)
         forward_step_id = 0
+        ref_logits_buf = self.num_pipe_buffers() - 1
         for step_id in range(total_steps):
             # Map the step of the pipeline to the micro-batch id and also whether it is a
             # forward or backward pass step.
@@ -899,15 +900,6 @@ class DPOTrainSchedule(PipeSchedule):
             if self._valid_micro_batch(micro_batch_id):
                 curr_buffer = self._buffer_idx(micro_batch_id)
 
-            # Alternate send/recv buffers for reference logits forward.
-            num_normal_pipe_buffers = self.num_pipe_buffers() - 2
-            if _is_even(self.stage_id):
-                recv_buf = step_id % 2 + num_normal_pipe_buffers
-                send_buf = (step_id + 1) % 2 + num_normal_pipe_buffers
-            else:
-                recv_buf = (step_id + 1) % 2 + num_normal_pipe_buffers
-                send_buf = step_id % 2 + num_normal_pipe_buffers
-
             cmds = []
 
             # Exchange activations
@@ -915,40 +907,26 @@ class DPOTrainSchedule(PipeSchedule):
                 if self._valid_micro_batch(prev_micro_batch_id) and self._valid_stage(self.prev_stage):
                     cmds.append(SendGrad(prev_buffer))
                 if self._valid_micro_batch(micro_batch_id) and self._valid_stage(self.prev_stage):
+                    cmds.append(RecvActivation(ref_logits_buf))
                     cmds.append(RecvActivation(curr_buffer))
-
-                # Activations for reference logits.
-                if _is_even(self.stage_id):
-                    if self._valid_stage(self.next_stage):
-                        if self._valid_micro_batch(micro_batch_id - 1):
-                            cmds.append(SendActivation(send_buf))
-                    if self._valid_stage(self.prev_stage):
-                        if self._valid_micro_batch(micro_batch_id):
-                            cmds.append(RecvActivation(recv_buf))
-                else:
-                    if self._valid_stage(self.prev_stage):
-                        if self._valid_micro_batch(micro_batch_id):
-                            cmds.append(RecvActivation(recv_buf))
-                    if self._valid_stage(self.next_stage):
-                        if self._valid_micro_batch(micro_batch_id - 1):
-                            cmds.append(SendActivation(send_buf))
             else:
                 if self._valid_micro_batch(micro_batch_id) and self._valid_stage(self.next_stage):
                     cmds.append(RecvGrad(curr_buffer))
                 if self._valid_micro_batch(prev_micro_batch_id) and self._valid_stage(self.next_stage):
+                    cmds.append(SendActivation(ref_logits_buf))
                     cmds.append(SendActivation(prev_buffer))
 
             # First/last stage loads
             if self.stage_id == 0 or self.stage_id == self.stages - 1:
                 if is_forward and self._valid_micro_batch(micro_batch_id):
                     # Load for normal forward and reference logits forward.
-                    cmds.append(LoadMicroBatchMultipleBuffers(curr_buffer, recv_buf))
+                    cmds.append(LoadMicroBatchMultipleBuffers(curr_buffer, ref_logits_buf))
 
             # Computation
             if self._valid_micro_batch(micro_batch_id):
                 if is_forward:
                     # Reference logits forward.
-                    cmds.append(ReferenceLogitsForwardPass(recv_buf))
+                    cmds.append(ReferenceLogitsForwardPass(ref_logits_buf))
                     cmds.append(ForwardPass(curr_buffer))
                     forward_step_id += 1
                 else:
@@ -966,8 +944,10 @@ class DPOTrainSchedule(PipeSchedule):
 
     def num_pipe_buffers(self):
         buffers = min(self.stages - self.stage_id, self.micro_batches)
-        # +2 buffers for reference logit forward pass.
-        return max(2, buffers) + 2
+        # +1 buffer for reference logits forward pass.
+        # Unlike inference, we only need 1 buffer, since alternating forward/backward passes means a stage
+        # is never sending and receiving activations on the same step.
+        return max(2, buffers) + 1
 
     def _step_to_micro_batch(self, step_id):
         if _is_even(step_id) and _is_even(self.stage_id):
