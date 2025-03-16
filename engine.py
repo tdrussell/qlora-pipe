@@ -120,9 +120,9 @@ class CustomPipelineEngine(PipelineEngine):
 
         # Sampling configuration. Only supports logits processors that don't use input_ids.
         self.logits_processor = transformers.LogitsProcessorList()
-        temp = transformers.TemperatureLogitsWarper(sampling_temperature)
+        temp = transformers.TemperatureLogitsWarper(float(sampling_temperature))
         if sampling_min_p > 0:
-            self.logits_processor.append(transformers.MinPLogitsWarper(sampling_min_p))
+            self.logits_processor.append(transformers.MinPLogitsWarper(float(sampling_min_p)))
         if sampling_temperature_last:
             self.logits_processor.append(temp)
         else:
