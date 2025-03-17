@@ -9,7 +9,7 @@ from pathlib import Path
 import deepspeed
 import torch
 import transformers
-from safetensors.torch import save_file
+from huggingface_hub import save_torch_state_dict
 
 from utils import DTYPE_MAP, is_main_process
 
@@ -121,18 +121,7 @@ class Saver:
             state_dict = {}
             for path in glob.glob(os.path.join(tmp_dir, '*.bin')):
                 state_dict.update(torch.load(path, map_location='cpu'))
-            shards, index = transformers.modeling_utils.shard_checkpoint(
-                state_dict, max_shard_size=max_shard_size, weights_name='model.safetensors'
-            )
-            for shard_file, shard in shards.items():
-                save_file(shard, os.path.join(save_dir, shard_file), metadata={'format': 'pt'})
-            if index is not None:
-                save_index_file = 'model.safetensors.index.json'
-                save_index_file = os.path.join(save_dir, save_index_file)
-                # Save the index as well
-                with open(save_index_file, 'w', encoding='utf-8') as f:
-                    content = json.dumps(index, indent=2, sort_keys=True) + '\n'
-                    f.write(content)
+            save_torch_state_dict(state_dict, save_dir, max_shard_size=max_shard_size)
             shutil.copy(self.args.config, save_dir)
             if hasattr(self.args, 'deepspeed_config') and self.args.deepspeed_config is not None:
                 shutil.copy(self.args.deepspeed_config, save_dir)
