@@ -94,8 +94,11 @@ class CustomPipelineEngine(PipelineEngine):
         *args,
         lora_model=None,
         tokenizer=None,
+        rl_config=None,
+        rejected_sampling=False,
+        rejected_sampling_max_new_tokens=1e9,
         sampling_temperature=1.0,
-        sampling_min_p=0,
+        sampling_min_p=0.,
         sampling_temperature_last=False,
         **kwargs
     ):
@@ -106,7 +109,9 @@ class CustomPipelineEngine(PipelineEngine):
         # Assign list to avoid registering the nn.Module
         self.lora_model = [lora_model]
         self.tokenizer = tokenizer
-        self.rejected_sampling = False
+        self.rl_config = rl_config
+        self.rejected_sampling = rejected_sampling
+        self.rejected_sampling_max_new_tokens = rejected_sampling_max_new_tokens
         eos_token_ids = set()
         if self.tokenizer is not None and self.tokenizer.eos_token_id is not None:
             eos_token_ids.add(self.tokenizer.eos_token_id)
@@ -127,14 +132,6 @@ class CustomPipelineEngine(PipelineEngine):
             self.logits_processor.append(temp)
         else:
             self.logits_processor.insert(0, temp)
-
-
-    def configure_rl(self, rl_config):
-        self.rl_config = rl_config
-
-
-    def enable_rejected_sampling(self, enabled):
-        self.rejected_sampling = enabled
 
 
     def set_dataloader(self, loader):
@@ -275,7 +272,7 @@ class CustomPipelineEngine(PipelineEngine):
 
         return agg_eval_losses
 
-    def sample_batch(self, prompts, max_new_tokens=1e9):
+    def sample_batch(self, prompts):
         assert isinstance(prompts, (list, tuple))
         self.reset_activation_shape()
         self.module.eval()
@@ -295,7 +292,7 @@ class CustomPipelineEngine(PipelineEngine):
         else:
             examples = None
         with torch.no_grad():
-            examples = self._exec_sampling_schedule(examples, max_new_tokens=max_new_tokens)
+            examples = self._exec_sampling_schedule(examples)
         if self.is_first_stage():
             text = [self.tokenizer.batch_decode(example['input_ids']) for example in examples]
         else:
@@ -672,7 +669,7 @@ class CustomPipelineEngine(PipelineEngine):
     def _valid_micro_batch(self, micro_batch_id):
         return 0 <= micro_batch_id < self.micro_batches
 
-    def _exec_sampling_schedule(self, examples, feature_prefix='', max_new_tokens=1e9, max_total_tokens=1e9):
+    def _exec_sampling_schedule(self, examples, feature_prefix='', max_total_tokens=1e9):
         start = time.time()
         input_ids_key = f'{feature_prefix}input_ids'
         attention_mask_key = f'{feature_prefix}attention_mask'
@@ -755,7 +752,7 @@ class CustomPipelineEngine(PipelineEngine):
                     p2p.recv(input_ids, self.num_stages - 1)
                 assert input_ids.size(-1) == 1, input_ids.shape
 
-                if example['num_new_tokens'] >= max_new_tokens:
+                if example['num_new_tokens'] >= self.rejected_sampling_max_new_tokens:
                     finished = True
                 if example[input_ids_key].size(1) >= max_total_tokens:
                     finished = True
@@ -816,6 +813,7 @@ class CustomPipelineEngine(PipelineEngine):
                 tps = total_new_tokens / duration
                 print(f'Total sampling time: {duration:.1f}, average tok/s: {tps:.1f}')
 
+        dist.barrier()
         return examples
 
     # make our forward pass method apply

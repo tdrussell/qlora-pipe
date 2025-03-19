@@ -426,22 +426,22 @@ if __name__ == '__main__':
         if is_main_process():
             for i, item in enumerate(iter(train_data)):
                 print('input_ids:')
-                print(item['input_ids'][:1000])
+                print(item['input_ids'])
                 print('decoded input_ids:')
-                print(tokenizer.decode(item['input_ids'][:1000]))
+                print(tokenizer.decode(item['input_ids']))
                 print('attention_mask:')
-                print(item['attention_mask'][:1000])
+                print(item['attention_mask'])
                 print('labels:')
-                print(item['labels'][:1000])
+                print(item['labels'])
                 if 'rejected_input_ids' in item:
                     print('rejected_input_ids:')
-                    print(item['rejected_input_ids'][:1000])
+                    print(item['rejected_input_ids'])
                     print('decoded rejected_input_ids:')
-                    print(tokenizer.decode(item['rejected_input_ids'][:1000]))
+                    print(tokenizer.decode(item['rejected_input_ids']))
                     print('rejected_attention_mask:')
-                    print(item['rejected_attention_mask'][:1000])
+                    print(item['rejected_attention_mask'])
                     print('rejected_labels:')
-                    print(item['rejected_labels'][:1000])
+                    print(item['rejected_labels'])
                 print('-' * 80)
                 if i >= args.debug_dataset - 1:
                     break
@@ -518,6 +518,8 @@ if __name__ == '__main__':
     if sampling_settings := config.get('sampling', None):
         for k, v in sampling_settings.items():
             kwargs['sampling_' + k] = v
+    rejected_sampling = config.get('rejected_sampling', False)
+    rl_config=config.get('rl', None)
     model_engine, optimizer = engine.initialize(
         args=args,
         model=pipeline_model,
@@ -526,12 +528,11 @@ if __name__ == '__main__':
         lora_model=lora_model,
         config=ds_config,
         tokenizer=tokenizer,
+        rl_config=rl_config,
+        rejected_sampling=rejected_sampling,
+        rejected_sampling_max_new_tokens=config.get('rejected_sampling_max_new_tokens', 1e9),
         **kwargs,
     )
-    if rl_config := config.get('rl', None):
-        model_engine.configure_rl(rl_config)
-    rejected_sampling = config.get('rejected_sampling', False)
-    model_engine.enable_rejected_sampling(rejected_sampling)
 
     # TODO: I have recently realized that we are setting things to fp16/bf16, even though all the DS
     # config was not in fp16 / bf16 mode. DS being in fp16/bf16 changes things in many places, e.g.

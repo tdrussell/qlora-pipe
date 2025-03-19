@@ -211,11 +211,19 @@ def combine_datasets(dataset_list, config, sample_weights):
 
 def _rejected_sampling_map_fn(example):
     # Labels are -100 for masked tokens (the prompt).
-    label_mask = (example['labels'] == -100)
+    label_mask = (example['labels'] == -100).to(torch.int32)
     assert label_mask.ndim == 1
-    # index of first False
-    completion_start = torch.argmin(label_mask.to(torch.int))
+
+    if (label_mask == 0).all():
+        # Raw text dataset
+        # TODO: allow configuring this
+        completion_start = len(label_mask) // 2
+        example['labels'][:completion_start] = -100
+    else:
+        # index of first False
+        completion_start = torch.argmin(label_mask).item()
     return {
+        'labels': example['labels'],
         'rejected_input_ids': example['input_ids'][:completion_start],
         'rejected_attention_mask': example['attention_mask'][:completion_start],
         'rejected_labels': example['labels'][:completion_start],
