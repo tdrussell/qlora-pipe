@@ -325,7 +325,7 @@ class InputLayer(nn.Module):
             # attention_mask can end up being None, which means use full causal attention. But with pipeline parallelism,
             # we can only pass tensors between layers. So make it an empty tensor, which will later be detected by the layers
             # and converted back to None. Note: this only works now because dynamic_shape=True in the pipeline engine.
-            attention_mask = torch.tensor([])
+            attention_mask = torch.tensor([], device=device)
         hidden_states = inputs_embeds
         if self.model.model.config.model_type == 'gemma2':
             normalizer = torch.tensor(self.model.model.config.hidden_size**0.5, dtype=hidden_states.dtype)
@@ -520,7 +520,7 @@ class Gemma3InputLayer(nn.Module):
             # attention_mask can end up being None, which means use full causal attention. But with pipeline parallelism,
             # we can only pass tensors between layers. So make it an empty tensor, which will later be detected by the layers
             # and converted back to None. Note: this only works now because dynamic_shape=True in the pipeline engine.
-            attention_mask = torch.tensor([])
+            attention_mask = torch.tensor([], device=device)
         hidden_states = inputs_embeds
         if self.model.model.config.model_type == 'gemma2':
             normalizer = torch.tensor(self.model.model.config.hidden_size**0.5, dtype=hidden_states.dtype)
