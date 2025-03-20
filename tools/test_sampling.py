@@ -9,9 +9,9 @@ import deepspeed
 import toml
 import transformers
 
-import engine
+import utils.engine as engine
 from train import load_pipeline_model_with_lora
-from utils import DTYPE_MAP, is_main_process
+from utils.utils import DTYPE_MAP, is_main_process
 
 
 PROMPT_FORMAT = """<|start_header_id|>user<|end_header_id|>

@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader
 from axolotl.utils.collators import DataCollatorForSeq2Seq
 
 
-from utils import is_main_process
+from utils.utils import is_main_process
 
 
 # A100 wants padding to multiple of 64, other cards are efficient with smaller, so just do 64

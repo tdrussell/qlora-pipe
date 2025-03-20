@@ -11,7 +11,7 @@ import torch
 import transformers
 from safetensors.torch import save_file
 
-from utils import DTYPE_MAP, is_main_process
+from utils.utils import DTYPE_MAP, is_main_process
 
 
 last_checkpoint_time = None

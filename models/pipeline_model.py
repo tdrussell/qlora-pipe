@@ -12,8 +12,8 @@ from torch import nn
 from transformers.integrations import get_keys_to_not_convert
 from accelerate.utils import set_module_tensor_to_device
 
-import hqq_utils
-from utils import is_main_process
+import utils.hqq_utils as hqq_utils
+from utils.utils import is_main_process
 
 
 LANGUAGE_MODEL_WEIGHT_PREFIX_REGEX = r'^language_model\.'

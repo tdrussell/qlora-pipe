@@ -13,7 +13,7 @@ from tqdm import tqdm
 from axolotl.utils.data import prepare_dataset
 from axolotl.utils.dict import DictDefault
 from axolotl.utils.trainer import process_datasets_for_packing
-from utils import is_main_process, zero_first
+from utils.utils import is_main_process, zero_first
 
 
 NUM_PROC = min(64, os.cpu_count())

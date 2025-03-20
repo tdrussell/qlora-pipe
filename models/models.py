@@ -2,7 +2,7 @@ import accelerate
 import torch
 import transformers
 
-from layers import (
+from models.layers import (
     InputLayer,
     LayerSpec,
     LlamaDecoderLayerPipe,
@@ -15,8 +15,8 @@ from layers import (
     Gemma3DecoderLayerPipe,
     Gemma3RMSNormPipe,
 )
-from pipeline_model import PipelineModel
-from utils import DTYPE_MAP
+from models.pipeline_model import PipelineModel
+from utils.utils import DTYPE_MAP
 
 DEFAULT_ATTN_IMPLEMENTATION = 'flash_attention_2'
 

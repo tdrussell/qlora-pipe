@@ -7,7 +7,7 @@ from hqq.core import quantize as hqq_quantize
 from torch import nn
 
 import peft
-from utils import DTYPE_MAP
+from utils.utils import DTYPE_MAP
 
 
 # Monkeypatch PEFT so that target_modules='all-linear' targets the HQQLinear layers, which are not

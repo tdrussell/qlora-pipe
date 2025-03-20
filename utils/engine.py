@@ -40,8 +40,8 @@ from deepspeed.runtime.pipe.topology import ProcessTopology
 from deepspeed.runtime.utils import PartitionedTensor
 from torch import nn
 
-from utils import eta_str, log, is_main_process
-from dataloader import split_batch, example_to_tuple
+from utils.utils import eta_str, log, is_main_process
+from utils.dataloader import split_batch, example_to_tuple
 
 
 def initialize(
