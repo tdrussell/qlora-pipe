@@ -291,12 +291,12 @@ def load_pipeline_model_with_lora(config, model_type):
         model = models.Phi3ForCausalLMPipe(config, quantization_config=quantization_config)
     elif model_type == 'gemma2':
         model = models.Gemma2ForCausalLMPipe(config, quantization_config=quantization_config)
-    elif model_type == 'mistral':
+    elif model_type == 'mistral' or model_type == 'mistral3':
         model = models.MistralForCausalLMPipe(config, quantization_config=quantization_config)
     elif model_type == 'gemma3':
         model = models.Gemma3ForCausalLMPipe(config, quantization_config=quantization_config)
     else:
-        raise NotImplementedError()
+        raise NotImplementedError(f'model_type {model_type} is not implemented')
 
     # CAREFUL! The "primary" layers of the model have to have 'decoderlayer' in them for
     # activation checkpointing to automatically work correctly.
