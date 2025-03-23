@@ -1032,10 +1032,10 @@ class DPOTrainSchedule(PipeSchedule):
         micro_batch_id = int(base + self.stage_id // 2)
         return micro_batch_id
 
-    # Override to account for the extra 2 buffers used for reference logit forward pass.
+    # Override to account for the extra buffer used for reference logit forward pass.
     def _buffer_idx(self, micro_batch_id):
         assert self._valid_micro_batch(micro_batch_id)
-        return micro_batch_id % (self.num_pipe_buffers() - 2)
+        return micro_batch_id % (self.num_pipe_buffers() - 1)
 
 
 class DPOInferenceSchedule(PipeSchedule):
