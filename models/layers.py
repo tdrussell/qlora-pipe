@@ -326,6 +326,12 @@ class InputLayer(nn.Module):
             # we can only pass tensors between layers. So make it an empty tensor, which will later be detected by the layers
             # and converted back to None. Note: this only works now because dynamic_shape=True in the pipeline engine.
             attention_mask = torch.tensor([], device=device)
+        # Work around a very strange Deepspeed bug. The combination of PipelineModule dynamic_shape=True, attention_mask being
+        # an integer dtype, and pipeline_stages>2 causes training (but not eval) to hang. So cast to float, and cast back to int
+        # in the layer.
+        if torch.is_tensor(attention_mask) and not torch.is_floating_point(attention_mask):
+            attention_mask = attention_mask.to(inputs_embeds.dtype)
+
         hidden_states = inputs_embeds
         if self.model.model.config.model_type == 'gemma2':
             normalizer = torch.tensor(self.model.model.config.hidden_size**0.5, dtype=hidden_states.dtype)
@@ -358,6 +364,7 @@ class LlamaDecoderLayerPipe(nn.Module):
         self.pipeline_model = [pipeline_model]
         self.orig = orig
         self.mlp_offloaded_to_cpu = False
+        self.attn_implementation = pipeline_model.config._attn_implementation
         loader_util.load_state_dict_into_module(self)
 
     # A note on MLP offloading:
@@ -371,22 +378,24 @@ class LlamaDecoderLayerPipe(nn.Module):
             self.move_mlp_to_cpu()
             return None
 
-        hidden_states, input_attention_mask, cos, sin, labels = inputs
+        hidden_states, attention_mask, cos, sin, labels = inputs
         if self.mlp_offloaded_to_cpu:
             if hidden_states.requires_grad:
                 hidden_states.register_hook(move_mlp_to_cpu_hook)
             self.move_mlp_to_device(hidden_states.device)
         kwargs = {}
-        if input_attention_mask.numel() == 0:
+        if attention_mask.numel() == 0:
             # We can't pass None between pipeline layers, so this signals that attention_mask should be None.
             kwargs['attention_mask'] = None
         else:
-            kwargs['attention_mask'] = input_attention_mask
+            # We have to pass attention mask between layers as float dtype, because in certain cases training hangs otherwise. So
+            # now cast it back to int64 if we are using flash_attention_2.
+            kwargs['attention_mask'] = attention_mask.to(torch.int64) if self.attn_implementation == 'flash_attention_2' else attention_mask
         kwargs['position_embeddings'] = (cos, sin)
         if self.pipeline_model[0].sampling_mode:
             kwargs['use_cache'] = True
             kwargs['past_key_value'] = self.pipeline_model[0].cache
-        result = (self.orig(hidden_states, **kwargs)[0], input_attention_mask, cos, sin, labels)
+        result = (self.orig(hidden_states, **kwargs)[0], attention_mask, cos, sin, labels)
         if self.mlp_offloaded_to_cpu and not torch.is_grad_enabled():
             self.move_mlp_to_cpu()
         return result
@@ -439,17 +448,17 @@ class MixtralDecoderLayerPipe(LlamaDecoderLayerPipe):
             self.move_mlp_to_cpu()
             return None
 
-        hidden_states, input_attention_mask, cos, sin, labels, *input_router_logits = inputs
+        hidden_states, attention_mask, cos, sin, labels, *input_router_logits = inputs
         if self.mlp_offloaded_to_cpu:
             if hidden_states.requires_grad:
                 hidden_states.register_hook(move_mlp_to_cpu_hook)
             self.move_mlp_to_device(hidden_states.device)
         kwargs = {}
-        if input_attention_mask.numel() == 0:
+        if attention_mask.numel() == 0:
             # We can't pass None between pipeline layers, so this signals that attention_mask should be None.
             kwargs['attention_mask'] = None
         else:
-            kwargs['attention_mask'] = input_attention_mask
+            kwargs['attention_mask'] = attention_mask.to(torch.int64) if self.attn_implementation == 'flash_attention_2' else attention_mask
         kwargs['position_embeddings'] = (cos, sin)
         if self.pipeline_model[0].sampling_mode:
             kwargs['use_cache'] = True
@@ -458,8 +467,8 @@ class MixtralDecoderLayerPipe(LlamaDecoderLayerPipe):
         # TODO: fix unsloth gradient checkpointing when we return router logits
         # router_logits = router_logits.to(torch.float32)
         # router_logits = input_router_logits + (router_logits,)
-        # result = (hidden_states, input_attention_mask, cos, sin, labels, *router_logits)
-        result = (hidden_states, input_attention_mask, cos, sin, labels)
+        # result = (hidden_states, attention_mask, cos, sin, labels, *router_logits)
+        result = (hidden_states, attention_mask, cos, sin, labels)
         if self.mlp_offloaded_to_cpu and not torch.is_grad_enabled():
             self.move_mlp_to_cpu()
         return result
@@ -521,6 +530,12 @@ class Gemma3InputLayer(nn.Module):
             # we can only pass tensors between layers. So make it an empty tensor, which will later be detected by the layers
             # and converted back to None. Note: this only works now because dynamic_shape=True in the pipeline engine.
             attention_mask = torch.tensor([], device=device)
+        # Work around a very strange Deepspeed bug. The combination of PipelineModule dynamic_shape=True, attention_mask being
+        # an integer dtype, and pipeline_stages>2 causes training (but not eval) to hang. So cast to float, and cast back to int
+        # in the layer.
+        if torch.is_tensor(attention_mask) and not torch.is_floating_point(attention_mask):
+            attention_mask = attention_mask.to(inputs_embeds.dtype)
+
         hidden_states = inputs_embeds
         if self.model.model.config.model_type == 'gemma2':
             normalizer = torch.tensor(self.model.model.config.hidden_size**0.5, dtype=hidden_states.dtype)
@@ -543,6 +558,7 @@ class Gemma3DecoderLayerPipe(nn.Module):
         self.pipeline_model = [pipeline_model]
         self.orig = orig
         self.mlp_offloaded_to_cpu = False
+        self.attn_implementation = pipeline_model.config._attn_implementation
         loader_util.load_state_dict_into_module(self)
 
     def forward(self, inputs):
@@ -560,7 +576,7 @@ class Gemma3DecoderLayerPipe(nn.Module):
             # We can't pass None between pipeline layers, so this signals that attention_mask should be None.
             kwargs['attention_mask'] = None
         else:
-            kwargs['attention_mask'] = attention_mask
+            kwargs['attention_mask'] = attention_mask.to(torch.int64) if self.attn_implementation == 'flash_attention_2' else attention_mask
         kwargs['position_embeddings_global'] = (position_embeddings_global_cos, position_embeddings_global_sin)
         kwargs['position_embeddings_local'] = (position_embeddings_local_cos, position_embeddings_local_sin)
         kwargs['cache_position'] = cache_position
