@@ -106,18 +106,15 @@ def load_axolotl_dataset(dataset_path, tokenizer, sequence_len, eval_size):
         cfg['val_set_size'] = 0 if eval_size is None else eval_size
     cfg['sequence_len'] = sequence_len
     cfg['tokenizer_config'] = 'dummy'
-    # these two don't matter, but they have to be set
+    # these don't matter, but they have to be set
     cfg['batch_size'] = 1
     cfg['num_epochs'] = 1
+    cfg['sequence_parallel_degree'] = 1
     cfg = DictDefault(cfg)
     train_data, eval_data, *_ = prepare_dataset(cfg, tokenizer)
     train_data.set_format(type='torch')
     if eval_data is not None:
         eval_data.set_format(type='torch')
-    # This used to always be called, but Axolotl changed it at some point. It drops examples longer
-    # than the sequence length, so make sure we call it.
-    with zero_first(is_main_process()):
-        train_data, eval_data = process_datasets_for_packing(cfg, train_data, eval_data)
     return train_data, eval_data
 
 
