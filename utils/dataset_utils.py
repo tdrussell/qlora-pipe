@@ -12,7 +12,6 @@ from tqdm import tqdm
 
 from axolotl.utils.data import prepare_dataset
 from axolotl.utils.dict import DictDefault
-from axolotl.utils.trainer import process_datasets_for_packing
 from utils.utils import is_main_process, zero_first
 
 
@@ -134,7 +133,13 @@ def load_pretokenized_dataset(dataset_path, tokenizer, sequence_len, eval_size):
     return train_data, eval_data
 
 
-def load_single_dataset(dataset_path, dataset_type, tokenizer, sequence_len, eval_size, subsample=None):
+def load_single_dataset(dataset_config, tokenizer):
+    dataset_path = dataset_config['dataset_path']
+    dataset_type = dataset_config['dataset_type']
+    sequence_len = dataset_config['sequence_len']
+    eval_size = dataset_config.get('eval_size', 0)
+    subsample = dataset_config.get('subsample', None)
+    num_repeats = dataset_config.get('num_repeats', None)
     if dataset_type in ['textfile', 'doclist']:
         with zero_first(is_main_process()):
             train_data, eval_data = load_raw_dataset(dataset_path, tokenizer, sequence_len, eval_size)
@@ -171,6 +176,9 @@ def load_single_dataset(dataset_path, dataset_type, tokenizer, sequence_len, eva
         train_data = train_data.remove_columns('prompt_attention_mask')
         if eval_data is not None:
             eval_data = eval_data.remove_columns('prompt_attention_mask')
+
+    if num_repeats:
+        train_data = train_data.repeat(num_repeats)
 
     if is_main_process():
         print(f'train_data size: {len(train_data)}')
@@ -253,14 +261,7 @@ def load_datasets(config, tokenizer):
             name = f'dataset{i}'
             i += 1
         sample_weights.append(dataset_config.get('sample_weight', 1.0))
-        train, eval = load_single_dataset(
-            dataset_config['dataset_path'],
-            dataset_config['dataset_type'],
-            tokenizer,
-            dataset_config['sequence_len'],
-            dataset_config.get('eval_size', 0),
-            subsample=dataset_config.get('subsample', None),
-        )
+        train, eval = load_single_dataset(dataset_config, tokenizer)
         train_datasets.append(train)
         if eval is not None:
             eval_datasets[name] = eval
@@ -271,14 +272,7 @@ def load_datasets(config, tokenizer):
         else:
             name = f'dataset{i}'
             i += 1
-        eval, _ = load_single_dataset(
-            dataset_config['dataset_path'],
-            dataset_config['dataset_type'],
-            tokenizer,
-            dataset_config['sequence_len'],
-            eval_size=0,
-            subsample=dataset_config.get('subsample', None),
-        )
+        eval, _ = load_single_dataset(dataset_config, tokenizer)
         eval_datasets[name] = eval
 
     if len(train_datasets) == 1:
@@ -296,6 +290,10 @@ def load_datasets(config, tokenizer):
         assert 'rejected_input_ids' in train_dataset.column_names
         for eval_dataset in eval_datasets.values():
             assert 'rejected_input_ids' in eval_dataset.column_names
+
+    train_dataset.set_format(type='torch')
+    for eval_dataset in eval_datasets.values():
+        eval_dataset.set_format(type='torch')
 
     return train_dataset, eval_datasets
 
