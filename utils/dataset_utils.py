@@ -24,8 +24,8 @@ def yield_sequences_from_token_batch(tokenizer, token_batch, sequence_len):
     for tokens in tqdm(token_batch):
         tokens = tokens.tolist()
         assert len(tokens) > 0, 'Empty tokens list'
-        assert tokens[-1] != tokenizer.eos_token_id, f'Token list already ends with EOS: {tokens[-1]}'
-        tokens.append(tokenizer.eos_token_id)
+        if tokens[-1] != tokenizer.eos_token_id:
+            tokens.append(tokenizer.eos_token_id)
         idx = 0
         # Skip the auto-generated BOS token if present
         if tokenizer.bos_token_id is not None and tokens[0] == tokenizer.bos_token_id:
