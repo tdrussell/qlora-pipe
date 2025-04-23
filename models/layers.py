@@ -340,7 +340,7 @@ class InputLayer(nn.Module):
 
         cos, sin = self.rotary_emb(hidden_states, position_ids)
 
-        output = hidden_states, attention_mask, cos, sin, labels
+        output = hidden_states, attention_mask, cos, sin, cache_position, labels
         # Deepspeed requirement. Float tensors must require grad.
         for tensor in output:
             if torch.is_floating_point(tensor):
@@ -355,7 +355,7 @@ class LlamaRMSNormPipe(nn.Module):
         loader_util.load_state_dict_into_module(self)
 
     def forward(self, inputs):
-        hidden_states, _, _, _, labels, *router_logits = inputs
+        hidden_states, _, _, _, _, labels, *router_logits = inputs
         return self.orig(hidden_states), labels, *router_logits
 
 
@@ -379,7 +379,7 @@ class LlamaDecoderLayerPipe(nn.Module):
             self.move_mlp_to_cpu()
             return None
 
-        hidden_states, attention_mask, cos, sin, labels = inputs
+        hidden_states, attention_mask, cos, sin, cache_position, labels = inputs
         if self.mlp_offloaded_to_cpu:
             if hidden_states.requires_grad:
                 hidden_states.register_hook(move_mlp_to_cpu_hook)
@@ -396,7 +396,8 @@ class LlamaDecoderLayerPipe(nn.Module):
         if self.pipeline_model[0].sampling_mode:
             kwargs['use_cache'] = True
             kwargs['past_key_value'] = self.pipeline_model[0].cache
-        result = (self.orig(hidden_states, **kwargs)[0], attention_mask, cos, sin, labels)
+        kwargs['cache_position'] = cache_position
+        result = (self.orig(hidden_states, **kwargs)[0], attention_mask, cos, sin, cache_position, labels)
         if self.mlp_offloaded_to_cpu and not torch.is_grad_enabled():
             self.move_mlp_to_cpu()
         return result
@@ -449,7 +450,7 @@ class MixtralDecoderLayerPipe(LlamaDecoderLayerPipe):
             self.move_mlp_to_cpu()
             return None
 
-        hidden_states, attention_mask, cos, sin, labels, *input_router_logits = inputs
+        hidden_states, attention_mask, cos, sin, cache_position, labels, *input_router_logits = inputs
         if self.mlp_offloaded_to_cpu:
             if hidden_states.requires_grad:
                 hidden_states.register_hook(move_mlp_to_cpu_hook)
@@ -469,7 +470,7 @@ class MixtralDecoderLayerPipe(LlamaDecoderLayerPipe):
         # router_logits = router_logits.to(torch.float32)
         # router_logits = input_router_logits + (router_logits,)
         # result = (hidden_states, attention_mask, cos, sin, labels, *router_logits)
-        result = (hidden_states, attention_mask, cos, sin, labels)
+        result = (hidden_states, attention_mask, cos, sin, cache_position, labels)
         if self.mlp_offloaded_to_cpu and not torch.is_grad_enabled():
             self.move_mlp_to_cpu()
         return result

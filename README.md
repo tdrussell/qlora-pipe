@@ -19,7 +19,7 @@ That being said, if something doesn't work right, or you would like it to suppor
 - Useful metrics logged to Tensorboard
 - Ability to specify a separate, fixed evaluation dataset
 - Train on multiple datasets simultaneously, with different sampling ratios per dataset
-- Models currently supported: Llama, Mistral, Mixtral, Qwen, Cohere (Command R), Phi-3 (mini and medium), Gemma 2, Gemma 3
+- Models currently supported: Llama, Mistral, Mixtral, Qwen, Cohere (Command R), Phi-3 (mini and medium), Gemma 2, Gemma 3, Cohere2 (Command-A)
 
 ## Installing
 Clone the repository:

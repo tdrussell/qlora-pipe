@@ -277,3 +277,37 @@ class Gemma3ForCausalLMPipe(PipelineModel, transformers.Gemma3ForCausalLM):
             )
         )
         return result
+
+
+class Cohere2ForCausalLMPipe(PipelineModel, transformers.Cohere2ForCausalLM):
+    def __init__(self, config, quantization_config):
+        model_config = transformers.Cohere2Config.from_pretrained(config['model'])
+        model_config._attn_implementation = config.get('attn_implementation', DEFAULT_ATTN_IMPLEMENTATION)
+        torch.set_default_dtype(DTYPE_MAP[config.get('model_weight_dtype', 'bfloat16')])
+        with accelerate.init_empty_weights():
+            transformers.Cohere2ForCausalLM.__init__(self, model_config)
+            PipelineModel.__init__(self, config, quantization_config, model_config)
+        torch.set_default_dtype(torch.float32)
+
+    def to_layer_specs(self):
+        # the embedding table for this model is huge; load balance it better with some heuristics
+        embedding_relative_size = 8
+        embedding_on_cpu = not self.train_config['full_fine_tune']
+        result = [LayerSpec(InputLayer, self, _estimated_size=2 if embedding_on_cpu else embedding_relative_size)]
+        for block in self.model.layers:
+            result.append(LayerSpec(LlamaDecoderLayerPipe, self, self.loader_util, block))
+        result.append(LayerSpec(LlamaRMSNormPipe, self.loader_util, self.model.norm, _estimated_size=0))
+        result.append(
+            LayerSpec(
+                OutputLayer,
+                self,
+                self.loader_util,
+                self.lm_head,
+                logit_scale=self.logit_scale,
+                loss_type=self.loss_type,
+                focal_loss_gamma=self.focal_loss_gamma,
+                tie_weights='model.embed_tokens.weight' if self.config.tie_word_embeddings else None,
+                _estimated_size=embedding_relative_size,
+            )
+        )
+        return result

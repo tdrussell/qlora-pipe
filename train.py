@@ -295,6 +295,8 @@ def load_pipeline_model_with_lora(config, model_type):
         model = models.MistralForCausalLMPipe(config, quantization_config=quantization_config)
     elif model_type == 'gemma3':
         model = models.Gemma3ForCausalLMPipe(config, quantization_config=quantization_config)
+    elif model_type == 'cohere2':
+        model = models.Cohere2ForCausalLMPipe(config, quantization_config=quantization_config)
     else:
         raise NotImplementedError(f'model_type {model_type} is not implemented')
 
