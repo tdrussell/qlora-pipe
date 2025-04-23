@@ -10,16 +10,17 @@ from kernels.cross_entropy_loss import Fast_CrossEntropyLoss
 
 
 def move_data_to_device(module, device):
+    non_blocking = (device != 'cpu')
     # handle lora
     if hasattr(module, 'base_layer'):
         module = module.base_layer
     # handle HQQ
     if hasattr(module, 'W_q'):
         orig_data = module.W_q.data
-        module.W_q.data = orig_data.to(device, non_blocking=True)
+        module.W_q.data = orig_data.to(device, non_blocking=non_blocking)
     else:
         orig_data = module.weight.data
-        module.weight.data = orig_data.to(device, non_blocking=True)
+        module.weight.data = orig_data.to(device, non_blocking=non_blocking)
     return orig_data
 
 
