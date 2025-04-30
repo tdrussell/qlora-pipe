@@ -39,6 +39,13 @@ class PipelineModel(nn.Module):
         for name, p in self.named_parameters():
             p.original_name = name
 
+    @classmethod
+    def get_tokenizer(cls, model_config: str | dict):
+        # Pad on left to support training techniques that involve sampling from the model.
+        return transformers.AutoTokenizer.from_pretrained(
+            model_config, local_files_only=True, model_max_length=int(1e30), padding_side='left'
+        )
+
     # need to override this method
     def to_layer_specs(self):
         raise NotImplementedError()

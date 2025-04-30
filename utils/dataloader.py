@@ -1,7 +1,7 @@
 import math
 import os.path
 import sys
-
+from dataclasses import dataclass
 
 sys.path.insert(0, os.path.abspath('axolotl/src'))
 
@@ -10,9 +10,7 @@ import torch
 import transformers
 from deepspeed import comm as dist
 from torch.utils.data import DataLoader
-
-from axolotl.utils.collators import DataCollatorForSeq2Seq
-
+from transformers import PreTrainedTokenizerBase
 
 from utils.utils import is_main_process
 
@@ -78,6 +76,44 @@ def shuffle_list(l, seed):
 
 def batch_size_tokens_after_padding(batch):
     return max(math.ceil(pair[1] / PAD_TO_MULTIPLE) * PAD_TO_MULTIPLE for pair in batch) * len(batch)
+
+
+@dataclass
+class DataCollatorForSeq2Seq:
+    tokenizer: PreTrainedTokenizerBase
+    pad_to_multiple_of: int | None = None
+    label_pad_token_id: int = -100
+
+    def __call__(self, examples):
+        batched_example = {}
+        for feature in examples[0].keys():
+            if feature == 'input_ids':
+                pad_value = self.tokenizer.pad_token_id
+            elif feature == 'labels':
+                pad_value = self.label_pad_token_id
+            else:
+                pad_value = 0
+            tensors = [example[feature] for example in examples]
+            batched_example[feature] = self._pad(tensors, pad_value, self.tokenizer.padding_side)
+        return batched_example
+
+    def _pad(self, tensors, pad_value, padding_side):
+        first_shape = tensors[0].shape[1:]
+        assert all(x.shape[1:] == first_shape for x in tensors)
+        shape = max(tensors, key=lambda x: x.shape[0]).shape
+        max_length = shape[0]
+        if self.pad_to_multiple_of is not None:
+            max_length = math.ceil(max_length / self.pad_to_multiple_of) * self.pad_to_multiple_of
+        bs = len(tensors)
+        batched_shape = (bs, max_length) + shape[1:]
+        result = torch.full(batched_shape, pad_value)
+        for i, tensor in enumerate(tensors):
+            length = tensor.shape[0]
+            if padding_side == 'right':
+                result[i, :length, ...] = tensor
+            else:
+                result[i, -length:, ...] = tensor
+        return result
 
 
 # A distributed batch sampler that supports grouping by length
@@ -215,9 +251,8 @@ class PipelineDataLoader:
         )
 
         data_collator = DataCollatorForSeq2Seq(self.tokenizer, pad_to_multiple_of=self.pad_to_multiple_of)
-        def collate_fn(examples, gradient_accumulation_steps=self.gradient_accumulation_steps):
-            has_batch_dimension = examples[0]['input_ids'].ndim == 2
-            if has_batch_dimension:
+        def collate_fn(examples, gradient_accumulation_steps=self.gradient_accumulation_steps, flatten=False):
+            if flatten:
                 examples = flatten_examples(examples)
             rejected_examples = []
             for example in examples:

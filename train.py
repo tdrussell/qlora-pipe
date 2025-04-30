@@ -246,13 +246,13 @@ def one_at_a_time():
         deepspeed.comm.barrier()
 
 
-def load_pipeline_model_with_lora(config, model_type):
+def load_pipeline_model_with_lora(config, model_class):
     full_fine_tune = config['full_fine_tune']
 
     if config.get('quantization', None):
         assert not full_fine_tune
         no_quant_modules = ['lm_head']
-        if model_type == 'mixtral':
+        if model_class == models.MixtralForCausalLMPipe:
             # the expert routing weights are tiny and probably important, don't quantize
             no_quant_modules.append('gate')
         if bnb_quant_config := config['quantization'].get('bnb', None):
@@ -279,26 +279,7 @@ def load_pipeline_model_with_lora(config, model_type):
     else:
         quantization_config = None
 
-    if model_type == 'llama':
-        model = models.LlamaForCausalLMPipe(config, quantization_config=quantization_config)
-    elif model_type == 'mixtral':
-        model = models.MixtralForCausalLMPipe(config, quantization_config=quantization_config)
-    elif model_type == 'qwen2':
-        model = models.Qwen2ForCausalLMPipe(config, quantization_config=quantization_config)
-    elif model_type == 'cohere':
-        model = models.CohereForCausalLMPipe(config, quantization_config=quantization_config)
-    elif model_type == 'phi3':
-        model = models.Phi3ForCausalLMPipe(config, quantization_config=quantization_config)
-    elif model_type == 'gemma2':
-        model = models.Gemma2ForCausalLMPipe(config, quantization_config=quantization_config)
-    elif model_type == 'mistral' or model_type == 'mistral3':
-        model = models.MistralForCausalLMPipe(config, quantization_config=quantization_config)
-    elif model_type == 'gemma3':
-        model = models.Gemma3ForCausalLMPipe(config, quantization_config=quantization_config)
-    elif model_type == 'cohere2':
-        model = models.Cohere2ForCausalLMPipe(config, quantization_config=quantization_config)
-    else:
-        raise NotImplementedError(f'model_type {model_type} is not implemented')
+    model = model_class(config, quantization_config=quantization_config)
 
     # CAREFUL! The "primary" layers of the model have to have 'decoderlayer' in them for
     # activation checkpointing to automatically work correctly.
@@ -307,6 +288,8 @@ def load_pipeline_model_with_lora(config, model_type):
     for layer in layers:
         if isinstance(layer, LayerSpec) and 'decoderlayer' in layer.typename.__name__.lower():
             checkpointable_layers.add(layer.typename.__name__)
+        elif 'decoderlayer' in layer.__class__.__name__.lower():
+            checkpointable_layers.add(layer.__class__.__name__)
     checkpointable_layers = list(checkpointable_layers)
 
     partition_method = 'estimated_size'
@@ -361,7 +344,6 @@ def load_pipeline_model_with_lora(config, model_type):
             lora_dropout=config['lora_dropout'] if 'lora_dropout' in config else 0,
             layers_to_transform=layers_to_transform,
             bias='none',
-            task_type='CAUSAL_LM',
             use_dora=config.get('use_dora', False),
         )
 
@@ -372,7 +354,8 @@ def load_pipeline_model_with_lora(config, model_type):
             if p.requires_grad:
                 p.data = p.data.to(DTYPE_MAP[config.get('lora_weight_dtype', 'float32')])
 
-        lora_model.model.config.use_cache = False
+        if hasattr(lora_model.model, 'config'):
+            lora_model.model.config.use_cache = False
         for name, p in lora_model.named_parameters():
             p.original_name = name
 
@@ -408,14 +391,38 @@ if __name__ == '__main__':
 
     deepspeed.init_distributed()
 
-    with open(os.path.join(config['model'], 'config.json')) as f:
-        model_config = json.load(f)
-        model_type = model_config.get('model_type', 'llama')
+    model_config = config['model']
+    if isinstance(model_config, str):
+        with open(os.path.join(config['model'], 'config.json')) as f:
+            model_type = json.load(f).get('model_type', 'llama')
+    else:
+        model_type = model_config['model_type']
 
-    # Pad on left to support training techniques that involve sampling from the model.
-    tokenizer = transformers.AutoTokenizer.from_pretrained(
-        config['model'], local_files_only=True, model_max_length=int(1e30), padding_side='left'
-    )
+    if model_type == 'llama':
+        model_class = models.LlamaForCausalLMPipe
+    elif model_type == 'mixtral':
+        model_class = models.MixtralForCausalLMPipe
+    elif model_type == 'qwen2':
+        model_class = models.Qwen2ForCausalLMPipe
+    elif model_type == 'cohere':
+        model_class = models.CohereForCausalLMPipe
+    elif model_type == 'phi3':
+        model_class = models.Phi3ForCausalLMPipe
+    elif model_type == 'gemma2':
+        model_class = models.Gemma2ForCausalLMPipe
+    elif model_type == 'mistral' or model_type == 'mistral3':
+        model_class = models.MistralForCausalLMPipe
+    elif model_type == 'gemma3':
+        model_class = models.Gemma3ForCausalLMPipe
+    elif model_type == 'cohere2':
+        model_class = models.Cohere2ForCausalLMPipe
+    elif model_type == 'csm':
+        from tts import csm
+        model_class = csm.CSM
+    else:
+        raise NotImplementedError(f'model_type {model_type} is not implemented')
+
+    tokenizer = model_class.get_tokenizer(model_config)
     # TODO: do we want to do this with cohere models? By default the EOS token is <|END_OF_TURN_TOKEN|>
     # if model_type == 'cohere':
     #     tokenizer.eos_token = '<EOS_TOKEN>'
@@ -476,7 +483,7 @@ if __name__ == '__main__':
 
     bitsandbytes.nn.modules.Params4bit.cuda = bnb_cuda_hijack
 
-    pipeline_model, lora_model, lora_config = load_pipeline_model_with_lora(config, model_type)
+    pipeline_model, lora_model, lora_config = load_pipeline_model_with_lora(config, model_class)
 
     parameters_to_train = [p for p in pipeline_model.parameters() if p.requires_grad]
 

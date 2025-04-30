@@ -115,8 +115,7 @@ class CustomPipelineEngine(PipelineEngine):
         eos_token_ids = set()
         if self.tokenizer is not None and self.tokenizer.eos_token_id is not None:
             eos_token_ids.add(self.tokenizer.eos_token_id)
-        model_config = self.module.model.config
-        if model_config.eos_token_id:
+        if (model_config := getattr(self.module.model, 'config', None)) and model_config.eos_token_id:
             model_eos_token_ids = model_config.eos_token_id
             if isinstance(model_eos_token_ids, int):
                 model_eos_token_ids = [model_eos_token_ids]
@@ -325,7 +324,7 @@ class CustomPipelineEngine(PipelineEngine):
             print(f'Example of sampled rejected completion:\n{text}')
         self.module.set_sampling_mode(False)
         if examples is not None:
-            batch = collate_fn(examples, gradient_accumulation_steps=self.micro_batches)
+            batch = collate_fn(examples, gradient_accumulation_steps=self.micro_batches, flatten=True)
             model_inputs = [example_to_tuple(micro_batch) for micro_batch in split_batch(batch, self.micro_batches)]
             return model_inputs
         else:
