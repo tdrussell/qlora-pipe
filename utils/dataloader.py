@@ -78,6 +78,8 @@ def batch_size_tokens_after_padding(batch):
     return max(math.ceil(pair[1] / PAD_TO_MULTIPLE) * PAD_TO_MULTIPLE for pair in batch) * len(batch)
 
 
+# Supports arbitrary numbers of extra dimensions on the tensors. For example, csm-1b has an extra
+# dimension for all the codebooks.
 @dataclass
 class DataCollatorForSeq2Seq:
     tokenizer: PreTrainedTokenizerBase
